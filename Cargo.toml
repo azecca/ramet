@@ -1,0 +1,43 @@
+[package]
+name = "ramet"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+description = "One git branch, one docker compose stack, data of its own: per-worktree environments backed by btrfs snapshots."
+readme = "README.md"
+keywords = ["docker-compose", "btrfs", "git-worktree", "snapshot", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "ramet"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.6.6", features = ["derive"] }
+rustix = { version = "1.1.4", features = ["fs", "process"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+signal-hook = { version = "0.4.4", default-features = false }
+thiserror = "2.0.20"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+unreachable_pub = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Every fallible function in this crate returns the same `Error` type, whose
+# variants document themselves; per-function `# Errors` sections would repeat them.
+missing_errors_doc = "allow"
+# Most accessors return plain values; `#[must_use]` on each one is noise.
+must_use_candidate = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

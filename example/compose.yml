@@ -1,0 +1,24 @@
+# Example project for the reference scenario. Deliberately free of anything ramet-specific.
+services:
+  web:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - uploads:/usr/share/nginx/html/uploads
+    depends_on:
+      - db
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: example
+      POSTGRES_DB: example
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
+  uploads:
