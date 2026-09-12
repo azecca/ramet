@@ -1,7 +1,8 @@
 #!/bin/sh
 # Installs ramet for the current user, then prepares its data volume.
 #
-#   ./install.sh                        from a clone: builds ramet with cargo
+#   ./install.sh                        from a release: installs the ramet next to it
+#                                       from a clone: builds ramet with cargo
 #   RAMET_BINARY=<path> ./install.sh    installs a binary built elsewhere
 #
 # ramet goes to ~/.local/bin (RAMET_INSTALL_DIR chooses another directory),
@@ -30,6 +31,11 @@ warn()    { step "${Y}!${Z}" "$1" "$2"; }
 detail()  { printf '%s%s\n' "$PAD" "$1"; }
 die()     { step "${R}✗${Z}" "$1" "$2"; echo; exit 1; }
 
+# Whether version $1 is at least $2, both written major.minor[.patch].
+version_at_least() {
+  printf '%s\n%s\n' "$2" "$1" | sort -t. -k1,1n -k2,2n -k3,3n -c 2>/dev/null
+}
+
 # `path` with the home directory written `~`.
 tilde() {
   case $1 in
@@ -39,7 +45,7 @@ tilde() {
 }
 
 echo
-printf '  %sramet install%s  %sbuilds ramet and puts it in your PATH%s\n' "$B" "$Z" "$D" "$Z"
+printf '  %sramet install%s  %sputs ramet in your PATH, then prepares its data volume%s\n' "$B" "$Z" "$D" "$Z"
 echo
 
 [ "$(uname -s)" = Linux ] || die system "ramet runs on Linux only (btrfs, loop devices)"
@@ -49,9 +55,26 @@ if [ -n "${RAMET_BINARY:-}" ]; then
   [ -x "$RAMET_BINARY" ] || die binary "$RAMET_BINARY is not an executable file"
   binary=$RAMET_BINARY
   ok binary "$(tilde "$binary")"
+elif [ -f "$SOURCE_DIR/ramet" ] && [ -x "$SOURCE_DIR/ramet" ]; then
+  # A release tarball: the binary sits next to this script.
+  binary=$SOURCE_DIR/ramet
+  ok binary "$(tilde "$binary")"
 elif grep -qs '^name = "ramet"' "$SOURCE_DIR/Cargo.toml"; then
+  # rustup puts cargo in ~/.cargo/bin, which the shell that just installed it
+  # does not have in its PATH yet.
+  if ! command -v cargo >/dev/null 2>&1 && [ -x "$HOME/.cargo/bin/cargo" ]; then
+    PATH=$HOME/.cargo/bin:$PATH
+  fi
   command -v cargo >/dev/null 2>&1 \
     || die build "cargo not found: install Rust (https://rustup.rs), then run this script again"
+  # Every problem that would stop the build, told before it starts.
+  needed=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' "$SOURCE_DIR/Cargo.toml" | head -n 1)
+  found=$(rustc --version 2>/dev/null | cut -d' ' -f2)
+  if [ -n "$needed" ] && ! version_at_least "${found:-0}" "$needed"; then
+    die build "ramet needs Rust $needed or later, and rustc is ${found:-missing}: run \`rustup update\`"
+  fi
+  command -v cc >/dev/null 2>&1 \
+    || die build "no C compiler to link ramet: install one (build-essential on Debian or Ubuntu)"
   version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$SOURCE_DIR/Cargo.toml" | head -n 1)
   pending build "compiling ramet $version (a minute or two the first time)…"
   if ! (cd "$SOURCE_DIR" && cargo build --release --locked --quiet); then
@@ -60,7 +83,7 @@ elif grep -qs '^name = "ramet"' "$SOURCE_DIR/Cargo.toml"; then
   binary=$SOURCE_DIR/target/release/ramet
   ok build "built ramet $version"
 else
-  die binary "run this script from a clone of the ramet repository"
+  die binary "run this script from a release tarball or a clone of the ramet repository"
 fi
 
 # ----------------------------------------------------------------- install --

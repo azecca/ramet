@@ -1,0 +1,131 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Shipping a v0.2.0 tarball built from 0.1.0 is silent and permanent.
+  guard:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: version
+        name: The tag must match the version in Cargo.toml
+        run: |
+          set -eu
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          [ -n "$version" ] || { echo "no version found in Cargo.toml" >&2; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          case "${GITHUB_REF}" in
+            refs/tags/*)
+              tag=${GITHUB_REF#refs/tags/}
+              if [ "$tag" != "v$version" ]; then
+                echo "tag $tag does not match version $version in Cargo.toml" >&2
+                exit 1
+              fi
+              echo "tag $tag matches Cargo.toml"
+              ;;
+            *) echo "no tag: dry run for version $version" ;;
+          esac
+
+  build:
+    needs: guard
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            arch: x86_64
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-latest
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98"
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # Both targets link statically against the musl that rustup ships with
+      # them. x86_64 is native and links with the runner's cc; aarch64 is
+      # cross-compiled and links with rust-lld, which rustup ships too, so no
+      # cross toolchain is needed. Checked with an aarch64 binary run under qemu.
+      - name: Build
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: rust-lld
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      # The tarball carries install.sh next to the binary, which install.sh
+      # then installs: no clone and no cargo. Its name carries no version, so
+      # that releases/latest/download/<name> is a link that never changes.
+      - name: Package
+        run: |
+          set -eu
+          dir=ramet-${{ matrix.arch }}-linux
+          mkdir "$dir"
+          cp target/${{ matrix.target }}/release/ramet install.sh README.md LICENSE "$dir/"
+          chmod 755 "$dir/ramet" "$dir/install.sh"
+          tar czf "$dir.tar.gz" "$dir"
+          sha256sum "$dir.tar.gz" > "$dir.tar.gz.sha256"
+          echo "--- the binary is static:"
+          file "$dir/ramet"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ramet-${{ matrix.arch }}
+          path: |
+            *.tar.gz
+            *.tar.gz.sha256
+          if-no-files-found: error
+
+  release:
+    needs: [guard, build]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          tag=${GITHUB_REF#refs/tags/}
+          # The backticks in the notes below are Markdown code spans for the
+          # release body, not shell substitutions: single quotes keep them literal.
+          # shellcheck disable=SC2016
+          gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$tag" \
+            --notes 'Static Linux binaries, x86_64 and aarch64.
+
+          Download the tarball for your machine and run the installer it contains:
+
+          ```sh
+          curl -fsSL https://github.com/'"$GITHUB_REPOSITORY"'/releases/download/'"$tag"'/ramet-$(uname -m)-linux.tar.gz | tar xz
+          ramet-$(uname -m)-linux/install.sh
+          ```
+
+          `uname -m` picks the tarball for your machine: `x86_64` or `aarch64`.
+
+          `install.sh` puts ramet in `~/.local/bin`, then runs `ramet setup`, which prepares the data volume and asks for your password once.' \
+            dist/*

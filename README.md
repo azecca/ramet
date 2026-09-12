@@ -24,14 +24,30 @@ written by you, for projects that need it.
 
 ## Installation
 
-From a clone of the repository, with Rust installed:
+Download the latest release and run the installer it contains:
 
 ```sh
-./install.sh
+curl -fsSL https://github.com/azecca/ramet/releases/latest/download/ramet-$(uname -m)-linux.tar.gz | tar xz
+ramet-$(uname -m)-linux/install.sh
 ```
 
-The script builds ramet, puts it in `~/.local/bin`, then runs `ramet setup`,
-which prepares the data volume:
+Releases carry binaries for `x86_64` and `aarch64` (64-bit ARM), and `uname -m`
+picks yours. On any other architecture, build ramet from source. That takes
+git, a C compiler and Rust 1.98 or later; on Debian or Ubuntu:
+
+```sh
+sudo apt install git curl build-essential
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y   # Rust
+git clone https://github.com/azecca/ramet
+ramet/install.sh
+```
+
+`install.sh` checks for cargo, Rust's version and the C compiler before it
+builds, and says what is missing. The rustup line can be skipped when
+`rustc --version` already shows 1.98 or later.
+
+The script puts ramet in `~/.local/bin`, then runs `ramet setup`, which
+prepares the data volume:
 
 1. a sparse 10 GiB btrfs image in `~/.local/share/ramet/data.img`, which only
    occupies what it contains (`ramet setup --size 30G` for another size);
@@ -46,8 +62,9 @@ fstab line. `ramet setup` is the only command that asks for privilege, here
 and when you resize the volume; every other command refuses to run under
 `sudo`.
 
-Running `./install.sh` again updates ramet; `ramet setup` skips whatever is
-already in place. `ramet doctor` checks the whole installation at any time.
+Running the installer of a newer release, or `./install.sh` in an updated
+clone, updates ramet; `ramet setup` skips whatever is already in place.
+`ramet doctor` checks the whole installation at any time.
 
 ## Commands
 

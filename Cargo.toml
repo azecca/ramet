@@ -7,6 +7,8 @@ description = "One git branch, one docker compose stack, data of its own: per-wo
 readme = "README.md"
 keywords = ["docker-compose", "btrfs", "git-worktree", "snapshot", "cli"]
 categories = ["command-line-utilities", "development-tools"]
+license = "MIT"
+repository = "https://github.com/azecca/ramet"
 
 [[bin]]
 name = "ramet"

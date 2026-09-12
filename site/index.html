@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ramet: a stack and its data for every git branch</title>
+<meta name="description" content="ramet gives each git branch its own worktree, its own docker compose stack and its own snapshot of the data. Runs on Linux.">
+<link rel="canonical" href="https://azecca.github.io/ramet/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="ramet: a stack and its data for every git branch">
+<meta property="og:description" content="Each git branch gets its own worktree, its own docker compose stack and its own snapshot of the data.">
+<meta property="og:url" content="https://azecca.github.io/ramet/">
+<meta property="og:image" content="https://azecca.github.io/ramet/demo.poster.png">
+<link rel="preload" href="recursive.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="wrap top">
+  <a class="wordmark" href="#main">ramet</a>
+  <nav class="nav" aria-label="Page">
+    <a href="#how">How it works</a>
+    <a href="#start">Get started</a>
+    <a href="https://github.com/azecca/ramet">GitHub</a>
+  </nav>
+</header>
+
+<main id="main">
+
+  <section class="wrap hero">
+    <h1>A stack and its data for every branch.</h1>
+    <div class="hero-grid">
+      <p class="hero-sub">
+        ramet gives each git branch its own copy of your docker compose app: its own
+        directory, its own containers on their own ports, and its own copy of every
+        volume, from the database to the uploads. Mess up the data, then rewind it or
+        throw it away.
+      </p>
+      <div class="hero-act">
+        <div class="cmd">
+          <span class="cmd-prompt" aria-hidden="true">$</span>
+          <code id="cmd-hero">ramet new feat-price</code>
+          <button class="copy" type="button" data-copy="cmd-hero" hidden>Copy</button>
+        </div>
+        <p class="buttons">
+          <a class="btn btn-main" href="#start">Get started</a>
+          <a class="btn" href="https://github.com/azecca/ramet">Source on GitHub</a>
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <figure class="garden">
+    <div class="garden-field">
+      <svg class="garden-art" viewBox="0 0 1200 432" preserveAspectRatio="xMidYMax slice"
+           role="img" aria-label="Three envs growing from one data volume. The main env runs on port 8080. A runner grows from it to feat-price, on port 21000, and on to fix-login, on port 21010. Below the ground, the roots of all three reach the same blocks of data.">
+        <defs>
+          <path id="leaf" d="M0 0 C16 -20 48 -20 64 0 C48 20 16 20 0 0 Z"/>
+          <g id="plant">
+            <path class="stem" d="M0 0 C2 -40 -3 -84 0 -120"/>
+            <g transform="translate(0 -120)">
+              <use class="leaf" href="#leaf" transform="rotate(-90)"/>
+              <use class="leaf" href="#leaf" transform="rotate(-148)"/>
+              <use class="leaf" href="#leaf" transform="rotate(-32)"/>
+            </g>
+            <use class="leaf" href="#leaf" transform="translate(0 -58) rotate(-168) scale(.72)"/>
+            <use class="leaf" href="#leaf" transform="translate(0 -44) rotate(-12) scale(.64)"/>
+          </g>
+        </defs>
+  
+        <rect class="soil" x="-400" y="300" width="2000" height="180"/>
+  
+        <g class="roots">
+          <path d="M420 300 C416 330 380 348 352 372"/>
+          <path d="M420 300 C426 334 470 350 506 372"/>
+          <path d="M760 300 C756 330 716 350 676 372"/>
+          <path d="M760 300 C766 334 800 350 836 372"/>
+          <path d="M1060 300 C1054 332 1010 352 966 372"/>
+        </g>
+        <g class="blocks">
+          <rect x="222" y="372" width="18" height="14" rx="2"/>
+          <rect x="248" y="372" width="18" height="14" rx="2"/>
+          <rect x="274" y="372" width="18" height="14" rx="2"/>
+          <rect x="300" y="372" width="18" height="14" rx="2"/>
+          <rect x="326" y="372" width="18" height="14" rx="2"/>
+          <rect x="352" y="372" width="18" height="14" rx="2"/>
+          <rect x="378" y="372" width="18" height="14" rx="2"/>
+          <rect x="404" y="372" width="18" height="14" rx="2"/>
+          <rect x="430" y="372" width="18" height="14" rx="2"/>
+          <rect x="456" y="372" width="18" height="14" rx="2"/>
+          <rect x="482" y="372" width="18" height="14" rx="2"/>
+          <rect x="508" y="372" width="18" height="14" rx="2"/>
+          <rect x="534" y="372" width="18" height="14" rx="2"/>
+          <rect x="560" y="372" width="18" height="14" rx="2"/>
+          <rect x="586" y="372" width="18" height="14" rx="2"/>
+          <rect x="612" y="372" width="18" height="14" rx="2"/>
+          <rect x="638" y="372" width="18" height="14" rx="2"/>
+          <rect x="664" y="372" width="18" height="14" rx="2"/>
+          <rect x="690" y="372" width="18" height="14" rx="2"/>
+          <rect x="716" y="372" width="18" height="14" rx="2"/>
+          <rect x="742" y="372" width="18" height="14" rx="2"/>
+          <rect x="768" y="372" width="18" height="14" rx="2"/>
+          <rect x="794" y="372" width="18" height="14" rx="2"/>
+          <rect class="own" x="820" y="372" width="18" height="14" rx="2"/>
+          <rect x="846" y="372" width="18" height="14" rx="2"/>
+          <rect x="872" y="372" width="18" height="14" rx="2"/>
+          <rect x="898" y="372" width="18" height="14" rx="2"/>
+          <rect x="924" y="372" width="18" height="14" rx="2"/>
+          <rect x="950" y="372" width="18" height="14" rx="2"/>
+          <rect x="976" y="372" width="18" height="14" rx="2"/>
+        </g>
+        <text class="soil-label" x="600" y="418">data blocks, shared between envs</text>
+  
+        <path class="ground" d="M-400 300 H1600"/>
+  
+        <path class="runner runner-far" d="M760 298 C850 250 970 250 1060 298"/>
+        <path class="runner runner-new" pathLength="1" d="M420 298 C520 236 660 236 760 298"/>
+  
+        <g transform="translate(420 300)"><use href="#plant"/></g>
+        <g transform="translate(760 300) scale(.86)"><g class="grow"><use href="#plant"/></g></g>
+        <g class="far" transform="translate(1060 300) scale(.7)"><use href="#plant"/></g>
+  
+        <g class="tag">
+          <text class="tag-name" x="420" y="72">main</text>
+          <text class="tag-port" x="420" y="94">localhost:8080</text>
+        </g>
+        <g class="tag tag-new">
+          <text class="tag-name" x="760" y="98">feat-price</text>
+          <text class="tag-port" x="760" y="120">localhost:21000</text>
+        </g>
+        <g class="tag far">
+          <text class="tag-name" x="1060" y="136">fix-login</text>
+          <text class="tag-port" x="1060" y="158">localhost:21010</text>
+        </g>
+      </svg>
+    </div>
+
+    <div class="wrap demo">
+      <div class="screen">
+        <video
+          poster="demo.poster.png"
+          autoplay muted loop playsinline controls
+          preload="metadata"
+          width="1280" height="720"
+          aria-label="A terminal session: ramet new, ls, checkpoint, restore, df and rm."
+        >
+          <source src="demo.webm" type="video/webm">
+          <source src="demo.mp4" type="video/mp4">
+          <a href="demo.gif">Watch the demo as an animated GIF</a>
+        </video>
+      </div>
+      <figcaption>
+        A new env, a checkpoint, a dropped table and a restore, in 37 seconds
+        (<a href="demo.gif">GIF version</a>).
+      </figcaption>
+    </div>
+  </figure>
+
+  <section class="wrap section">
+    <h2>One compose project, one set of volumes</h2>
+    <p class="lead">
+      A compose project has one set of ports and one set of volumes. Check out a
+      second branch and it runs on the same stack and the same data: two branches
+      cannot run side by side, and a migration or a bulk delete you regret has no way
+      back.
+    </p>
+  </section>
+
+  <section class="wrap section" id="how">
+    <h2>An env for each branch</h2>
+    <p class="lead">
+      ramet calls each copy an env: a git worktree, a compose stack on ports of its
+      own, and a btrfs snapshot of the data, which shares every block it has not
+      changed.
+    </p>
+
+    <ol class="life">
+      <li>
+        <code class="life-cmd life-new">ramet new feat-price</code>
+        <p>Creates the worktree, snapshots the data of the env you are in, and starts
+        the stack on free ports. It takes seconds and almost no disk.</p>
+      </li>
+      <li>
+        <code class="life-cmd">ramet checkpoint before-migration</code>
+        <p>Sets a return point on the data. <code>ramet restore before-migration</code>
+        rewinds to it.</p>
+      </li>
+      <li>
+        <code class="life-cmd">ramet rm feat-price</code>
+        <p>Removes the stack, the worktree and the data.</p>
+      </li>
+    </ol>
+
+    <p class="promise">
+      <strong>Your project is never modified.</strong> ramet adds no file to the
+      repository and leaves <code>compose.yml</code> as it is, so a plain
+      <code>docker compose up</code> keeps working.
+    </p>
+  </section>
+
+  <section class="wrap section" id="start">
+    <h2>Get started</h2>
+
+    <div class="code">
+      <div class="code-bar">
+        <span>Download, install, then create your first env</span>
+        <button class="copy" type="button" data-copy="cmd-start" hidden>Copy</button>
+      </div>
+      <pre tabindex="0"><code id="cmd-start">curl -fsSL https://github.com/azecca/ramet/releases/latest/download/ramet-$(uname -m)-linux.tar.gz | tar xz
+ramet-$(uname -m)-linux/install.sh
+
+cd ~/code/shop    <span class="comment"># your compose project</span>
+ramet init
+ramet new feat-price</code></pre>
+    </div>
+
+    <div class="start">
+      <div>
+        <ol class="steps">
+          <li><code>install.sh</code> puts ramet in <code>~/.local/bin</code> and
+          prepares its data volume. It asks for your password once; no other ramet
+          command uses sudo.</li>
+          <li><code>ramet init</code>, once per compose project, copies its docker
+          volumes into ramet.</li>
+          <li><code>ramet new</code> clones the env you are in, and prints the new
+          worktree and its ports.</li>
+        </ol>
+      </div>
+
+      <div>
+        <h3>You need</h3>
+        <ul class="needs">
+          <li>Linux</li>
+          <li>Docker Engine with Compose v2, and a user in the <code>docker</code> group</li>
+          <li>git 2.5 or later</li>
+          <li><code>btrfs-progs</code>, but no btrfs partition: ramet keeps its data in
+          an image file</li>
+        </ul>
+        <p class="aside">
+          <strong>Linux for now.</strong> ramet relies on btrfs snapshots and on docker
+          running directly on the host. macOS and Windows are not supported yet.
+        </p>
+      </div>
+    </div>
+
+    <h3 class="other">On another architecture</h3>
+    <p class="aside">
+      Releases carry binaries for <code>x86_64</code> and <code>aarch64</code> (64-bit
+      ARM). Anywhere else, build ramet from source. That takes git, a C compiler and
+      Rust 1.98 or later, and <code>install.sh</code> says which one is missing
+      before it starts.
+    </p>
+    <div class="code">
+      <div class="code-bar">
+        <span>Build from source, on Debian or Ubuntu</span>
+        <button class="copy" type="button" data-copy="cmd-source" hidden>Copy</button>
+      </div>
+      <pre tabindex="0"><code id="cmd-source">sudo apt install git curl build-essential
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y    <span class="comment"># Rust</span>
+git clone https://github.com/azecca/ramet
+ramet/install.sh</code></pre>
+    </div>
+  </section>
+
+  <section class="wrap section" id="commands">
+    <h2>Every day</h2>
+    <dl class="cmds">
+      <div><dt><code>ramet new &lt;name&gt;</code></dt><dd>Clone the current env.</dd></div>
+      <div><dt><code>ramet ls</code></dt><dd>List the envs, their branches and ports.</dd></div>
+      <div><dt><code>ramet compose &lt;command&gt;</code></dt><dd>Run docker compose on the current env, as in <code>ramet compose logs -f web</code>.</dd></div>
+      <div><dt><code>ramet checkpoint &lt;label&gt;</code></dt><dd>Set a return point on the env's data.</dd></div>
+      <div class="danger"><dt><code>ramet restore &lt;label&gt;</code></dt><dd>Rewind the data to a checkpoint. Asks first.</dd></div>
+      <div class="danger"><dt><code>ramet rm &lt;name&gt;</code></dt><dd>Remove an env and its data. Asks first.</dd></div>
+    </dl>
+    <p class="aside">
+      ramet acts on the env of the directory you are in, as git does with branches.
+      <code>ramet --help</code> lists the other commands, and the
+      <a href="https://github.com/azecca/ramet#readme">README</a> documents all of
+      them.
+    </p>
+  </section>
+
+  <section class="wrap section" id="agents">
+    <h2>With AI agents</h2>
+    <p class="lead">
+      An env per task lets an agent work on real data without risk. Listings
+      take <code>--json</code>, and a command that destroys data refuses to run
+      without a terminal unless given <code>--yes</code>. The
+      <a href="https://github.com/azecca/ramet/blob/main/skills/ramet/SKILL.md">ramet
+      skill</a> teaches an agent the rest, including when to ask before passing it.
+    </p>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <p class="foot-mark">ramet</p>
+    <p>
+      Free software under the MIT licence.
+      <a href="https://github.com/azecca/ramet">Source and issues on GitHub</a>.
+    </p>
+  </div>
+</footer>
+
+<script>
+  // Copy buttons: progressive enhancement, the command is selectable anyway.
+  for (const button of document.querySelectorAll('[data-copy]')) {
+    button.hidden = false;
+    button.addEventListener('click', async () => {
+      const code = document.getElementById(button.dataset.copy);
+      await navigator.clipboard.writeText(code.textContent.trim());
+      button.textContent = 'Copied';
+      setTimeout(() => { button.textContent = 'Copy'; }, 1500);
+    });
+  }
+  // prefers-reduced-motion cannot gate <video autoplay> from CSS.
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    const video = document.querySelector('video');
+    if (video) { video.pause(); video.removeAttribute('loop'); video.controls = true; }
+  }
+</script>
+
+</body>
+</html>
