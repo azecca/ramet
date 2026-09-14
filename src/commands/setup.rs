@@ -13,14 +13,16 @@
 //! be turned on, which let `ramet df` measure every env exactly: setup turns
 //! them on for ramet's image.
 
+use std::ffi::{OsStr, OsString};
 use std::fmt::Display;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::commands::{Outcome, prerequisites};
 use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::layout::{DATA_IMAGE_SIZE, FSTAB, GIB, LOW_SPACE_THRESHOLD};
-use crate::process::{Cmd, RunnerExt};
+use crate::process::{Cmd, RunnerExt, shell_quote};
 use crate::storage::Quotas;
 use crate::storage::volume::{ImageGeometry, missing_fstab_options, missing_source_file};
 use crate::ui::Ui;
@@ -127,9 +129,12 @@ fn prepare_volume(ctx: &Context, out: &Steps<'_>, size: u64) -> Result<bool> {
     let root = ctx.layout().root().to_owned();
     let mounted = volume.mounted_filesystem();
     if mounted.is_empty() {
-        let privileged = prepare_mount(ctx, out, size)?;
+        let privileged = prepare_mount(ctx, out)?;
         if !run_as_root(ctx, out, "system", None, &privileged)? {
             return Ok(false);
+        }
+        if volume.fstab_mounts_the_image(&volume.fstab_source()) {
+            ensure_image(ctx, out, size)?;
         }
     } else if mounted != "btrfs" {
         return Err(Error::ForeignMount {
@@ -144,7 +149,8 @@ fn prepare_volume(ctx: &Context, out: &Steps<'_>, size: u64) -> Result<bool> {
         Err(Error::RootNotWritable { root }) => {
             let hand_over = RootStep::HandOver {
                 root,
-                user: ctx.host().user_name(),
+                uid: ctx.host().effective_uid(),
+                gid: ctx.host().effective_gid(),
             };
             if !run_as_root(ctx, out, "system", None, &[hand_over])? {
                 return Ok(false);
@@ -155,9 +161,9 @@ fn prepare_volume(ctx: &Context, out: &Steps<'_>, size: u64) -> Result<bool> {
     }
 }
 
-/// Prepares what an unmounted volume needs: the image and its fstab line.
-/// Returns the steps left to root.
-fn prepare_mount(ctx: &Context, out: &Steps<'_>, size: u64) -> Result<Vec<RootStep>> {
+/// Prepares what an unmounted volume needs: the mount point, the empty image
+/// and its fstab line. Returns the steps left to root.
+fn prepare_mount(ctx: &Context, out: &Steps<'_>) -> Result<Vec<RootStep>> {
     let volume = ctx.data_volume();
     let layout = ctx.layout();
     let root = layout.root();
@@ -167,7 +173,12 @@ fn prepare_mount(ctx: &Context, out: &Steps<'_>, size: u64) -> Result<Vec<RootSt
     }
     let source = volume.fstab_source();
     if source.is_empty() {
-        ensure_image(ctx, out, size)?;
+        if volume.fstab_file_names_root(Path::new(FSTAB)) {
+            return Err(Error::FstabLineUnread {
+                root: root.to_owned(),
+            });
+        }
+        privileged.extend(image_steps(ctx));
         privileged.push(RootStep::AddFstabLine(layout.fstab_line()));
         return Ok(privileged);
     }
@@ -180,7 +191,7 @@ fn prepare_mount(ctx: &Context, out: &Steps<'_>, size: u64) -> Result<Vec<RootSt
         });
     }
     if volume.fstab_mounts_the_image(&source) {
-        ensure_image(ctx, out, size)?;
+        privileged.extend(image_steps(ctx));
         out.done("/etc/fstab", "line present");
     } else if let Some(source_file) = missing_source_file(&source) {
         return Err(Error::FstabSourceMissing {
@@ -193,10 +204,33 @@ fn prepare_mount(ctx: &Context, out: &Steps<'_>, size: u64) -> Result<Vec<RootSt
     Ok(privileged)
 }
 
-/// Creates the data image with `size` bytes unless it exists.
+/// What root does for the data image to exist: its directory, which only
+/// root may write, and the empty file, which belongs to the user. Nothing
+/// when the image is there.
+fn image_steps(ctx: &Context) -> Vec<RootStep> {
+    let image = ctx.layout().data_image();
+    if fs::symlink_metadata(image).is_ok() {
+        return Vec::new();
+    }
+    let host = ctx.host();
+    let mut steps = Vec::new();
+    if let Some(dir) = image.parent() {
+        steps.push(RootStep::CreateImageDir(dir.to_owned()));
+    }
+    steps.push(RootStep::CreateImage {
+        image: image.to_owned(),
+        uid: host.effective_uid(),
+        gid: host.effective_gid(),
+    });
+    steps
+}
+
+/// Formats the data image with `size` bytes when root just created it empty.
 fn ensure_image(ctx: &Context, out: &Steps<'_>, size: u64) -> Result<()> {
     let image = ctx.layout().data_image();
-    if let Ok(meta) = image.metadata() {
+    if let Ok(meta) = image.metadata()
+        && meta.len() > 0
+    {
         out.done(
             "data image",
             format!(
@@ -208,7 +242,7 @@ fn ensure_image(ctx: &Context, out: &Steps<'_>, size: u64) -> Result<()> {
         );
         return Ok(());
     }
-    ctx.data_volume().create_image(size)?;
+    ctx.data_volume().format_image(size)?;
     out.done(
         "data image",
         format!(
@@ -352,7 +386,7 @@ fn run_as_root(
     // A genuinely root environment (a container, a machine administered that
     // way) needs no sudo; `sudo ramet setup` never gets this far.
     let through_sudo = host.effective_uid() != 0;
-    if through_sudo && host.find_program("sudo").is_none() {
+    if through_sudo && host.system_program("sudo").is_none() {
         out.failed(
             label,
             format!("{intro}root is needed, and sudo is not installed."),
@@ -371,7 +405,8 @@ fn run_as_root(
     out.commands(steps);
     for step in steps {
         step.check(ctx)?;
-        ctx.runner().run_checked(&step.command(through_sudo))?;
+        ctx.runner()
+            .run_checked(&step.command(|name| host.system_program(name), through_sudo)?)?;
     }
     let done: Vec<String> = steps.iter().map(RootStep::outcome).collect();
     out.done(label, done.join(", "));
@@ -406,14 +441,27 @@ fn report_volume(ctx: &Context, out: &Steps<'_>) {
 enum RootStep {
     /// Create the mount point of the data volume.
     CreateMountPoint(PathBuf),
+    /// Create the directory of the data image, writable by root alone.
+    CreateImageDir(PathBuf),
+    /// Create the data image, empty, for the user to format.
+    CreateImage {
+        /// The image.
+        image: PathBuf,
+        /// The user's id.
+        uid: u32,
+        /// The user's group id.
+        gid: u32,
+    },
     /// Append the data volume's line to `/etc/fstab`.
     AddFstabLine(String),
     /// Give the root of the mounted volume to the user.
     HandOver {
         /// The data root.
         root: PathBuf,
-        /// The user.
-        user: String,
+        /// The user's id: never a name taken from the environment.
+        uid: u32,
+        /// The user's group id.
+        gid: u32,
     },
     /// Resize the btrfs mounted on the data root, online.
     ResizeFilesystem {
@@ -440,33 +488,69 @@ enum RootStep {
 }
 
 impl RootStep {
-    /// The command performing the step.
-    fn command(&self, through_sudo: bool) -> Cmd {
-        let program = |name: &str| {
-            if through_sudo {
-                Cmd::new("sudo").arg(name)
-            } else {
-                Cmd::new(name)
-            }
-        };
-        match self {
-            Self::CreateMountPoint(root) => program("mkdir").arg("-p").arg(root),
-            // A leading newline: the file may not end with one, and a line
-            // glued to the previous one would corrupt both.
-            Self::AddFstabLine(line) => program("tee")
-                .args(["-a", FSTAB])
-                .input(format!("\n{FSTAB_COMMENT}\n{line}")),
-            Self::HandOver { root, user } => program("chown").arg(user).arg(root),
-            Self::ResizeFilesystem { root, size } => program("btrfs")
-                .args(["filesystem", "resize", &size_argument(*size)])
-                .arg(root),
-            Self::ResizeImage { image, size } => program("truncate")
-                .args(["-s", &size_argument(*size)])
-                .arg(image),
-            Self::ReloadDevice(device) => program("losetup").args(["-c", device]),
-            Self::EnableQuotas(root) => program("btrfs").args(["quota", "enable"]).arg(root),
-            Self::RescanQuotas(root) => program("btrfs").args(["quota", "rescan", "-w"]).arg(root),
+    /// The program performing the step, and its arguments.
+    fn argv(&self) -> (&'static str, Vec<OsString>) {
+        fn os(parts: &[&dyn AsRef<OsStr>]) -> Vec<OsString> {
+            parts.iter().map(|part| part.as_ref().to_owned()).collect()
         }
+        match self {
+            Self::CreateMountPoint(root) => ("mkdir", os(&[&"-p", root])),
+            Self::CreateImageDir(dir) => ("install", os(&[&"-d", &"-m", &"0755", dir])),
+            Self::CreateImage { image, uid, gid } => (
+                "install",
+                os(&[
+                    &"-m",
+                    &"0600",
+                    &"-o",
+                    &uid.to_string(),
+                    &"-g",
+                    &gid.to_string(),
+                    &"/dev/null",
+                    image,
+                ]),
+            ),
+            Self::AddFstabLine(_) => ("tee", os(&[&"-a", &FSTAB])),
+            Self::HandOver { root, uid, gid } => {
+                ("chown", os(&[&"--", &format!("{uid}:{gid}"), root]))
+            }
+            Self::ResizeFilesystem { root, size } => (
+                "btrfs",
+                os(&[&"filesystem", &"resize", &size_argument(*size), root]),
+            ),
+            // `-c`: never create the file, which only root may do here.
+            Self::ResizeImage { image, size } => (
+                "truncate",
+                os(&[&"-c", &"-s", &size_argument(*size), image]),
+            ),
+            Self::ReloadDevice(device) => ("losetup", os(&[&"-c", device])),
+            Self::EnableQuotas(root) => ("btrfs", os(&[&"quota", &"enable", root])),
+            Self::RescanQuotas(root) => ("btrfs", os(&[&"quota", &"rescan", &"-w", root])),
+        }
+    }
+
+    /// The command performing the step, through `sudo` when `through_sudo`,
+    /// with every program where `locate` finds it: in the system's own
+    /// directories, never in `PATH` (see [`Host::system_program`](crate::host::Host::system_program)).
+    fn command(&self, locate: impl Fn(&str) -> Option<PathBuf>, through_sudo: bool) -> Result<Cmd> {
+        let locate = |name: &str| {
+            locate(name).ok_or_else(|| Error::CommandNotFound {
+                program: name.to_owned(),
+            })
+        };
+        let (name, args) = self.argv();
+        let program = locate(name)?;
+        let mut cmd = if through_sudo {
+            Cmd::new(locate("sudo")?).arg(program)
+        } else {
+            Cmd::new(program)
+        };
+        cmd = cmd.args(args);
+        // A leading newline: the file may not end with one, and a line glued
+        // to the previous one would corrupt both.
+        if let Self::AddFstabLine(line) = self {
+            cmd = cmd.input(format!("\n{FSTAB_COMMENT}\n{line}"));
+        }
+        Ok(cmd)
     }
 
     /// Refuses to run the step when what it relies on does not hold.
@@ -490,29 +574,29 @@ impl RootStep {
 
     /// The step as a root shell would run it, for the user to read or paste.
     fn shell_lines(&self) -> Vec<String> {
-        match self {
-            Self::CreateMountPoint(root) => vec![format!("mkdir -p {}", root.display())],
-            Self::AddFstabLine(line) => vec![
+        if let Self::AddFstabLine(line) = self {
+            return vec![
                 format!("cat >> {FSTAB} <<'EOF'"),
                 FSTAB_COMMENT.to_owned(),
                 line.trim_end().to_owned(),
                 "EOF".to_owned(),
-            ],
-            Self::HandOver { root, user } => vec![format!("chown {user} {}", root.display())],
-            Self::ResizeFilesystem { .. }
-            | Self::ResizeImage { .. }
-            | Self::ReloadDevice(_)
-            | Self::EnableQuotas(_)
-            | Self::RescanQuotas(_) => vec![self.command(false).to_string()],
+            ];
         }
+        let (name, args) = self.argv();
+        let words: Vec<String> = std::iter::once(name.to_owned())
+            .chain(args.iter().map(|arg| shell_quote(&arg.to_string_lossy())))
+            .collect();
+        vec![words.join(" ")]
     }
 
     /// What the step achieved, once run.
     fn outcome(&self) -> String {
         match self {
             Self::CreateMountPoint(root) => format!("{} created", root.display()),
+            Self::CreateImageDir(dir) => format!("{} created", dir.display()),
+            Self::CreateImage { image, .. } => format!("{} created", image.display()),
             Self::AddFstabLine(_) => format!("{FSTAB} line added"),
-            Self::HandOver { root, user } => format!("{} handed over to {user}", root.display()),
+            Self::HandOver { root, .. } => format!("{} handed over to you", root.display()),
             Self::ResizeFilesystem { size, .. } => {
                 format!("btrfs resized to {}", human_bytes(Some(*size)))
             }
@@ -611,11 +695,19 @@ impl<'a> Steps<'a> {
 mod tests {
     use super::*;
 
+    /// Every program installed in `/usr/bin`.
+    fn system(name: &str) -> Option<PathBuf> {
+        Path::new("/usr/bin").join(name).into()
+    }
+
     #[test]
     fn the_fstab_line_is_appended_on_a_line_of_its_own() {
         let step = RootStep::AddFstabLine("/img /srv/ramet btrfs noauto 0 0\n".to_owned());
-        let cmd = step.command(true);
-        assert_eq!(cmd.argv(), ["sudo", "tee", "-a", "/etc/fstab"]);
+        let cmd = step.command(system, true).unwrap();
+        assert_eq!(
+            cmd.argv(),
+            ["/usr/bin/sudo", "/usr/bin/tee", "-a", "/etc/fstab"]
+        );
         let input = cmd.input_text().unwrap();
         assert!(input.starts_with('\n'), "{input:?}");
         assert!(
@@ -627,11 +719,42 @@ mod tests {
     #[test]
     fn a_root_environment_runs_the_steps_without_sudo() {
         let step = RootStep::CreateMountPoint(PathBuf::from("/srv/ramet"));
-        assert_eq!(step.command(false).argv(), ["mkdir", "-p", "/srv/ramet"]);
         assert_eq!(
-            step.command(true).argv(),
-            ["sudo", "mkdir", "-p", "/srv/ramet"]
+            step.command(system, false).unwrap().argv(),
+            ["/usr/bin/mkdir", "-p", "/srv/ramet"]
         );
+        assert_eq!(
+            step.command(system, true).unwrap().argv(),
+            ["/usr/bin/sudo", "/usr/bin/mkdir", "-p", "/srv/ramet"]
+        );
+    }
+
+    #[test]
+    fn a_program_missing_from_the_system_directories_is_not_looked_for_elsewhere() {
+        let step = RootStep::EnableQuotas(PathBuf::from("/srv/ramet"));
+        let err = step.command(|_| None, true).unwrap_err();
+        assert!(matches!(err, Error::CommandNotFound { .. }), "{err}");
+    }
+
+    #[test]
+    fn the_image_is_created_empty_for_the_user_in_a_directory_of_root_s() {
+        let dir = RootStep::CreateImageDir(PathBuf::from("/var/lib/ramet"));
+        assert_eq!(dir.shell_lines(), ["install -d -m 0755 /var/lib/ramet"]);
+        let image = RootStep::CreateImage {
+            image: PathBuf::from("/var/lib/ramet/data.img"),
+            uid: 1000,
+            gid: 1001,
+        };
+        assert_eq!(
+            image.shell_lines(),
+            ["install -m 0600 -o 1000 -g 1001 /dev/null /var/lib/ramet/data.img"]
+        );
+        let hand_over = RootStep::HandOver {
+            root: PathBuf::from("/srv/ramet"),
+            uid: 1000,
+            gid: 1001,
+        };
+        assert_eq!(hand_over.shell_lines(), ["chown -- 1000:1001 /srv/ramet"]);
     }
 
     #[test]

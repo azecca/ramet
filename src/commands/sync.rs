@@ -42,7 +42,7 @@ struct Write {
 
 /// Runs `ramet sync`.
 pub fn run(ctx: &Context, args: &Args) -> Result<Outcome> {
-    let target = store::current_env(ctx)?;
+    let (target, _lock) = store::current_env_locked(ctx)?;
     let source = source_env(ctx, &target, given(args.from.as_ref()))?;
     let ui = ctx.ui();
     let style = ui.style();

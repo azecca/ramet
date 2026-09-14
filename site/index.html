@@ -208,8 +208,9 @@
         <span>Download, install, then create your first env</span>
         <button class="copy" type="button" data-copy="cmd-start" hidden>Copy</button>
       </div>
-      <pre tabindex="0"><code id="cmd-start">curl -fsSL https://github.com/azecca/ramet/releases/latest/download/ramet-$(uname -m)-linux.tar.gz | tar xz
-ramet-$(uname -m)-linux/install.sh
+      <pre tabindex="0"><code id="cmd-start">arch=$(uname -m)
+curl -fsSL "https://github.com/azecca/ramet/releases/latest/download/ramet-$arch-linux.tar.gz" | tar xz
+"ramet-$arch-linux/install.sh"
 
 cd ~/code/shop    <span class="comment"># your compose project</span>
 ramet init

@@ -79,3 +79,53 @@ fn an_incomplete_fstab_line_is_reported() {
     assert!(out.contains("lacks `user`"), "{out}");
     assert!(out.contains("lacks `user_subvol_rm_allowed`"), "{out}");
 }
+
+#[test]
+fn a_restore_cut_short_mid_swap_is_reported_with_the_command_that_repairs_it() {
+    // Killed between the two renames: feat-a's data sits under its outgoing
+    // name, and its own place is empty.
+    let fx = Fixture::with_main_env();
+    let machine = fx.machine();
+    machine.borrow_mut().fstab = Some(fx.image_fstab_line());
+    machine.borrow_mut().mounted = true;
+    fs::write(fx.layout().data_image(), "").unwrap();
+    fx.secondary_env("feat-a");
+    fs::rename(fx.env_dir("feat-a"), fx.env_dir("feat-a@.replaced")).unwrap();
+    fs::create_dir_all(fx.env_dir("main@.restoring")).unwrap();
+
+    doctor(&fx);
+    let out = fx.stdout();
+    assert!(
+        out.contains(&format!(
+            "`mv {} {}` puts it back",
+            fx.env_dir("feat-a@.replaced").display(),
+            fx.env_dir("feat-a").display()
+        )),
+        "{out}"
+    );
+    assert!(out.contains("the next restore deletes it"), "{out}");
+    assert!(
+        !out.contains("missing from env.json: main@.restoring"),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_stack_left_paused_is_reported() {
+    let fx = Fixture::with_main_env();
+    let machine = fx.machine();
+    machine.borrow_mut().fstab = Some(fx.image_fstab_line());
+    machine.borrow_mut().mounted = true;
+    fs::write(fx.layout().data_image(), "").unwrap();
+    fx.runner.set_containers(
+        r#"[{"Service":"db","State":"paused"},{"Service":"web","State":"running"}]"#,
+    );
+
+    assert_eq!(doctor(&fx), 1);
+    let out = fx.stdout();
+    assert!(
+        out.contains("paused, left frozen by a command that did not finish: db"),
+        "{out}"
+    );
+    assert!(out.contains("`ramet compose unpause`"), "{out}");
+}

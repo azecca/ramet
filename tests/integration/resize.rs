@@ -37,7 +37,7 @@ fn grows_from_the_image_up() {
     assert_eq!(
         root_programs(&fx),
         [
-            format!("truncate -s 20G {image}"),
+            format!("truncate -c -s 20G {image}"),
             "losetup -c /dev/loop0".to_owned(),
             format!("btrfs filesystem resize 20G {root}"),
         ]
@@ -67,7 +67,7 @@ fn shrinks_btrfs_before_cutting_the_image() {
         root_programs(&fx),
         [
             format!("btrfs filesystem resize 8G {root}"),
-            format!("truncate -s 8G {image}"),
+            format!("truncate -c -s 8G {image}"),
             "losetup -c /dev/loop0".to_owned(),
         ]
     );
@@ -156,7 +156,7 @@ fn completes_an_interrupted_shrink() {
     assert_eq!(setup_size(&fx, "8G"), 0, "{}", fx.stderr());
     let programs = root_programs(&fx);
     assert_eq!(programs.len(), 2, "{programs:?}");
-    assert!(programs[0].starts_with("truncate -s 8G"));
+    assert!(programs[0].starts_with("truncate -c -s 8G"));
     assert!(programs[1].starts_with("losetup -c"));
     assert_eq!(fx.image_size(), 8 * GIB);
 }
@@ -176,7 +176,7 @@ fn without_sudo_the_whole_sequence_is_shown() {
     assert_eq!(fx.image_size(), 10 * GIB, "nothing runs");
     let out = fx.stdout();
     assert!(out.contains("As root, run:"), "{out}");
-    let truncate = out.find("truncate -s 20G").expect("truncate shown");
+    let truncate = out.find("truncate -c -s 20G").expect("truncate shown");
     let reload = out.find("losetup -c /dev/loop0").expect("losetup shown");
     let resize = out
         .find("btrfs filesystem resize 20G")

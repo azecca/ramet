@@ -4,15 +4,18 @@
 //! through a [`Runner`]. A single gateway keeps `--verbose` logging exhaustive
 //! and lets tests substitute a scripted runner for the real system.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::fmt::{self, Write as _};
 use std::io::{self, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
 use crate::error::{Error, Result};
+use crate::host::locate_program;
 use crate::ui::Style;
 
 /// Exit code a shell reports for a program it cannot find.
@@ -47,7 +50,8 @@ pub struct Cmd {
 }
 
 impl Cmd {
-    /// Starts a command line for `program`, looked up in `PATH`.
+    /// Starts a command line for `program`, looked up in `PATH`, then in
+    /// `/usr/sbin` and `/sbin`, which a regular user's `PATH` may lack.
     pub fn new(program: impl AsRef<OsStr>) -> Self {
         Self {
             program: program.as_ref().to_owned(),
@@ -307,7 +311,7 @@ impl Runner for SystemRunner {
         if self.verbose {
             self.log(cmd);
         }
-        let mut command = Command::new(cmd.program());
+        let mut command = Command::new(program_to_start(cmd.program(), locate_program));
         command.args(cmd.arguments()).envs(cmd.env_vars());
         if let Some(dir) = cmd.working_dir() {
             command.current_dir(dir);
@@ -337,6 +341,17 @@ impl Runner for SystemRunner {
             }
         }
     }
+}
+
+/// The file to start for `program`: a bare name is looked up with `locate`,
+/// and kept as it is when that finds nothing.
+fn program_to_start(program: &OsStr, locate: impl Fn(&str) -> Option<PathBuf>) -> Cow<'_, OsStr> {
+    let bare = !program.as_bytes().contains(&b'/');
+    program
+        .to_str()
+        .filter(|_| bare)
+        .and_then(locate)
+        .map_or(Cow::Borrowed(program), |path| Cow::Owned(path.into()))
 }
 
 /// Runs `command` with `input` on its standard input, capturing its output.
@@ -382,6 +397,25 @@ pub fn shell_quote(word: &str) -> String {
 mod tests {
     use super::*;
     use std::assert_matches;
+
+    #[test]
+    fn a_bare_program_is_started_from_where_it_was_found() {
+        let losetup = PathBuf::from("/usr/sbin/losetup");
+        let found = |name: &str| (name == "losetup").then(|| losetup.clone());
+
+        assert_eq!(
+            program_to_start(OsStr::new("losetup"), found),
+            losetup.as_os_str()
+        );
+        // Not found anywhere: the name is kept, for the error to report it.
+        assert_eq!(
+            program_to_start(OsStr::new("absent"), found),
+            OsStr::new("absent")
+        );
+        // A path is taken as it is.
+        let path = OsStr::new("./bin/losetup");
+        assert_eq!(program_to_start(path, |_| panic!("not looked up")), path);
+    }
 
     #[test]
     fn quotes_only_when_needed() {

@@ -1,14 +1,21 @@
 //! Facts about the machine that are not obtained through external commands.
 
+use std::ffi::OsStr;
 use std::io;
 use std::net::{Ipv4Addr, TcpListener};
 use std::path::{Path, PathBuf};
 
-use crate::util::fs::{is_executable, which};
+use crate::util::fs::is_executable;
 
 /// Directories holding administration tools, which a regular user's `PATH`
-/// may lack: some distributions install `mkfs.btrfs` there.
+/// may lack: Debian installs `losetup` and `mkfs.btrfs` there, openSUSE
+/// `btrfs` too.
 const SYSTEM_BIN_DIRS: [&str; 2] = ["/usr/sbin", "/sbin"];
+
+/// The system's own program directories, the only ones searched for what
+/// runs as root: a directory of the user's early in `PATH` would otherwise
+/// hand root a program of its choosing.
+const ROOT_PROGRAM_DIRS: [&str; 4] = ["/usr/sbin", "/usr/bin", "/sbin", "/bin"];
 
 /// Size and free space of a filesystem, in bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -39,6 +46,10 @@ pub trait Host {
     /// such as `/usr/sbin`.
     fn find_program(&self, program: &str) -> Option<PathBuf>;
 
+    /// Where `program` is installed among the system's own directories,
+    /// `PATH` ignored: for `sudo`, and for what it runs.
+    fn system_program(&self, program: &str) -> Option<PathBuf>;
+
     /// Size and free space of the filesystem holding `path`.
     fn space(&self, path: &Path) -> io::Result<Space>;
 
@@ -59,6 +70,9 @@ pub trait Host {
     /// The effective user id of the process.
     fn effective_uid(&self) -> u32;
 
+    /// The effective group id of the process.
+    fn effective_gid(&self) -> u32;
+
     /// Where the kernel's sysfs is mounted: `/sys`.
     fn sysfs(&self) -> PathBuf;
 }
@@ -69,12 +83,14 @@ pub struct SystemHost;
 
 impl Host for SystemHost {
     fn find_program(&self, program: &str) -> Option<PathBuf> {
-        which(program).or_else(|| {
-            SYSTEM_BIN_DIRS
-                .iter()
-                .map(|dir| Path::new(dir).join(program))
-                .find(|candidate| is_executable(candidate))
-        })
+        locate_program(program)
+    }
+
+    fn system_program(&self, program: &str) -> Option<PathBuf> {
+        ROOT_PROGRAM_DIRS
+            .iter()
+            .map(|dir| Path::new(dir).join(program))
+            .find(|candidate| is_executable(candidate))
     }
 
     fn space(&self, path: &Path) -> io::Result<Space> {
@@ -113,9 +129,36 @@ impl Host for SystemHost {
         rustix::process::geteuid().as_raw()
     }
 
+    fn effective_gid(&self) -> u32 {
+        rustix::process::getegid().as_raw()
+    }
+
     fn sysfs(&self) -> PathBuf {
         PathBuf::from("/sys")
     }
+}
+
+/// Where `program` is installed: in `PATH`, or else in a system directory
+/// such as `/usr/sbin`.
+///
+/// What ramet checks is installed this way is also run this way: a program
+/// found only in `/usr/sbin` must not pass the check and then fail to start.
+pub fn locate_program(program: &str) -> Option<PathBuf> {
+    search_program(
+        program,
+        std::env::var_os("PATH").as_deref(),
+        &SYSTEM_BIN_DIRS.map(Path::new),
+    )
+}
+
+/// Finds `program` in the directories of the `PATH` value `path`, then in
+/// `fallback`.
+fn search_program(program: &str, path: Option<&OsStr>, fallback: &[&Path]) -> Option<PathBuf> {
+    path.into_iter()
+        .flat_map(std::env::split_paths)
+        .chain(fallback.iter().map(|dir| dir.to_path_buf()))
+        .map(|dir| dir.join(program))
+        .find(|candidate| is_executable(candidate))
 }
 
 /// The account name of `uid` in the content of an `/etc/passwd` file.
@@ -145,6 +188,45 @@ mod tests {
     fn finds_an_installed_program_and_only_that() {
         assert!(SystemHost.find_program("sh").is_some());
         assert_eq!(SystemHost.find_program("ramet-no-such-program"), None);
+    }
+
+    #[test]
+    fn a_program_missing_from_path_is_found_in_the_system_directories() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let user = tempfile::tempdir().unwrap();
+        let system = tempfile::tempdir().unwrap();
+        let install = |dir: &Path, name: &str| {
+            let program = dir.join(name);
+            std::fs::write(&program, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+            program
+        };
+        let both_user = install(user.path(), "both");
+        install(system.path(), "both");
+        let losetup = install(system.path(), "losetup");
+        let path = user.path().as_os_str();
+        let fallback = [system.path()];
+
+        assert_eq!(
+            search_program("losetup", Some(path), &fallback),
+            Some(losetup)
+        );
+        assert_eq!(
+            search_program("both", Some(path), &fallback),
+            Some(both_user)
+        );
+        assert_eq!(search_program("none", Some(path), &fallback), None);
+    }
+
+    #[test]
+    fn a_system_program_is_never_taken_from_path() {
+        assert!(
+            SystemHost
+                .system_program("sh")
+                .is_some_and(|sh| sh.starts_with("/usr") || sh.starts_with("/bin"))
+        );
+        assert_eq!(SystemHost.system_program("ramet-no-such-program"), None);
     }
 
     #[test]

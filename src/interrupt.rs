@@ -1,17 +1,22 @@
-//! Ctrl-C while the stack of an env is frozen.
+//! Ctrl-C, and the signals that end a process, while ramet must not stop.
 //!
 //! Ctrl-C ends ramet on the spot, like any program, and that is right almost
-//! everywhere. Not while a stack is frozen: ending there would leave it
-//! paused, hanging every client of that env without a word. For as long as a
-//! [`Deferral`] is held, Ctrl-C is recorded instead. The external command
-//! running at that moment still receives it from the terminal and stops, so
-//! the command unwinds as on any failure, thaws the stack, and ramet then
-//! exits as interrupted.
+//! everywhere. Not while a stack is frozen, which would stay paused and hang
+//! every client of that env without a word, nor while a restore swaps an
+//! env's data. For as long as a [`Deferral`] is held, Ctrl-C is recorded
+//! instead. The external command running at that moment still receives it
+//! from the terminal and stops, so the command unwinds as on any failure,
+//! thaws the stack, and ramet then exits as interrupted.
+//!
+//! `SIGTERM` and `SIGHUP` are deferred alike: an agent's tool killing a
+//! command that runs too long, or a closed terminal, must not freeze a stack
+//! for good either. `SIGKILL` cannot be caught: `ramet doctor` reports what it
+//! leaves behind.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use signal_hook::consts::SIGINT;
+use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 
 /// State shared with the signal handler.
 struct Flags {
@@ -32,12 +37,16 @@ fn install() -> Option<Flags> {
     };
     // Actions run in registration order: while `immediate` is set, the
     // default action ends the process before anything is recorded.
-    signal_hook::flag::register_conditional_default(SIGINT, Arc::clone(&flags.immediate)).ok()?;
-    signal_hook::flag::register(SIGINT, Arc::clone(&flags.received)).ok()?;
+    for signal in [SIGINT, SIGTERM, SIGHUP] {
+        signal_hook::flag::register_conditional_default(signal, Arc::clone(&flags.immediate))
+            .ok()?;
+        signal_hook::flag::register(signal, Arc::clone(&flags.received)).ok()?;
+    }
     Some(flags)
 }
 
-/// While held, Ctrl-C is recorded rather than ending the process.
+/// While held, Ctrl-C, `SIGTERM` and `SIGHUP` are recorded rather than ending
+/// the process.
 ///
 /// Deferrals do not nest: one stack is frozen at a time.
 #[must_use = "Ctrl-C is only deferred while the guard is held"]
@@ -64,7 +73,7 @@ impl Drop for Deferral {
     }
 }
 
-/// Whether Ctrl-C was pressed while deferred.
+/// Whether Ctrl-C was pressed, or the process asked to end, while deferred.
 pub fn received() -> bool {
     FLAGS
         .get()

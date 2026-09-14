@@ -8,6 +8,7 @@ use crate::context::Context;
 use crate::env::Env;
 use crate::error::{Error, Result};
 use crate::layout::{Layout, env_file_name, is_checkpoint_name};
+use crate::lock::{self, Lock};
 use crate::ports::{self, PortRange};
 use crate::util::fs::{read_json, resolve, sorted_entries};
 
@@ -122,6 +123,15 @@ pub fn locate(ctx: &Context) -> Location {
         project,
         worktree: Some(worktree),
     }
+}
+
+/// The env whose worktree contains the working directory, read once the lock
+/// of its project is held, for a command that changes it: whoever held the
+/// lock may have changed it meanwhile. See [`crate::lock`].
+pub fn current_env_locked(ctx: &Context) -> Result<(Env, Lock)> {
+    let env = current_env(ctx)?;
+    let lock = lock::project(ctx, &env.project)?;
+    Ok((current_env(ctx)?, lock))
 }
 
 /// The env whose worktree contains the working directory.

@@ -19,7 +19,7 @@ use crate::env::store;
 use crate::error::{Error, Result};
 use crate::process::RunnerExt;
 use crate::storage::Usage;
-use crate::util::fs::tilde;
+use crate::util::fs::{is_gone, tilde};
 use crate::util::size::human_bytes;
 
 /// Arguments of `ramet prune`.
@@ -204,7 +204,18 @@ fn execute(ctx: &Context, plan: &Plan<'_>) -> Result<usize> {
     let ui = ctx.ui();
     let layout = ctx.layout();
     let project = &plan.project.name;
+    let _lock = crate::lock::project(ctx, project)?;
+    let mut deleted = 0;
     for subvolume in &plan.subvolumes {
+        // Waiting for the lock gave other commands time: what is gone, or
+        // whose worktree is back, is left out.
+        let back = subvolume
+            .worktree
+            .as_deref()
+            .is_some_and(|worktree| !is_gone(worktree));
+        if is_gone(&subvolume.path) || back {
+            continue;
+        }
         let file = layout.compose_file(project, &subvolume.name);
         if subvolume.checkpoint_of.is_none() && file.exists() {
             // The worktree is gone: the subvolume stands in as project
@@ -221,6 +232,7 @@ fn execute(ctx: &Context, plan: &Plan<'_>) -> Result<usize> {
         }
         ctx.subvolumes().delete(project, &subvolume.path)?;
         ui.ok(format!("{project}/{} deleted", subvolume.name));
+        deleted += 1;
     }
     if plan.whole {
         match std::fs::remove_dir(&plan.project.dir) {
@@ -241,5 +253,5 @@ fn execute(ctx: &Context, plan: &Plan<'_>) -> Result<usize> {
         // git still lists the worktrees whose directory disappeared.
         ctx.git().prune_worktrees(clone);
     }
-    Ok(plan.subvolumes.len())
+    Ok(deleted)
 }

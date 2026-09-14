@@ -128,6 +128,16 @@ impl<'a> DataVolume<'a> {
         self.findmnt(&["--fstab", "-o", "SOURCE", "--mountpoint"])
     }
 
+    /// Whether a line of the file `fstab` names the root as its mount point,
+    /// read without `findmnt`.
+    ///
+    /// `findmnt` answers "no line" as well when it fails, or when
+    /// `LIBMOUNT_FSTAB` points it at another file: before appending a line, the
+    /// file itself is read, so that a second line never follows the first.
+    pub fn fstab_file_names_root(&self, fstab: &Path) -> bool {
+        fs::read_to_string(fstab).is_ok_and(|text| fstab_names(&text, self.root()))
+    }
+
     /// Whether the `/etc/fstab` entry mounts ramet's own image.
     pub fn fstab_mounts_the_image(&self, source: &str) -> bool {
         resolve(Path::new(source)) == resolve(self.layout.data_image())
@@ -138,9 +148,8 @@ impl<'a> DataVolume<'a> {
         self.root().is_dir() && self.filesystem() == "btrfs" && is_writable(self.root())
     }
 
-    /// Takes away every access other users have to the data: to the image,
-    /// the directory holding it, and the root of the mounted volume. Returns
-    /// the paths changed.
+    /// Takes away every access other users have to the data: to the image and
+    /// to the root of the mounted volume. Returns the paths changed.
     ///
     /// Versions up to 0.1.0 created them readable by everyone, so that any
     /// local user could copy the image, or browse the volume once mounted, and
@@ -148,9 +157,7 @@ impl<'a> DataVolume<'a> {
     /// are kept; a symbolic link, or a path this user cannot change, is left
     /// as it is.
     pub fn restrict_access(&self) -> Vec<PathBuf> {
-        let image = self.layout.data_image();
-        let mut paths = vec![image.to_owned()];
-        paths.extend(image.parent().map(Path::to_path_buf));
+        let mut paths = vec![self.layout.data_image().to_owned()];
         if self.is_usable() {
             paths.push(self.root().to_owned());
         }
@@ -221,44 +228,47 @@ impl<'a> DataVolume<'a> {
         Ok(mounting)
     }
 
-    /// Creates the data image: a sparse file of `size` bytes, formatted as btrfs.
+    /// Formats the data image, which root created empty and gave to the user:
+    /// it becomes a sparse file of `size` bytes holding a btrfs.
     ///
-    /// No privilege is needed, since the image lives in the user's home. The
-    /// filesystem is built from an empty directory of the user's (`--rootdir`),
-    /// so that its root belongs to them from the start; without that it would
-    /// belong to root, and handing it over would take a privileged mount.
+    /// No privilege is needed, the file being the user's. The filesystem is
+    /// built from an empty directory of theirs (`--rootdir`), so that its root
+    /// belongs to them from the start; without that it would belong to root,
+    /// and handing it over would take a privileged mount. That directory is
+    /// private, and so is the volume's root: the volume holds every env's
+    /// data, databases included.
     ///
-    /// The image, its directory and that root are for the user alone: the
-    /// volume holds every env's data, databases included. See
-    /// [`restrict_access`](Self::restrict_access).
-    pub fn create_image(&self, size: u64) -> Result<()> {
+    /// The image is opened without following a link, and only an empty one
+    /// is formatted: a file holding anything is never written over.
+    pub fn format_image(&self, size: u64) -> Result<()> {
         let image = self.layout.data_image();
-        let dir = image.parent().unwrap_or(Path::new("."));
-        fs::create_dir_all(dir).map_err(|source| Error::io(dir, source))?;
-        fs::set_permissions(dir, Permissions::from_mode(0o700))
-            .map_err(|source| Error::io(dir, source))?;
+        let io = |source| Error::io(image, source);
         let file = OpenOptions::new()
             .write(true)
-            .create_new(true)
-            .mode(0o600)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits().cast_signed())
             .open(image)
-            .map_err(|source| Error::io(image, source))?;
-        let formatted = file
-            .set_len(size)
-            .map_err(|source| Error::io(image, source))
-            .and_then(|()| self.format_image(image, dir));
+            .map_err(io)?;
+        let meta = file.metadata().map_err(io)?;
+        if !meta.is_file() || meta.len() != 0 {
+            return Err(Error::ImageNotEmpty {
+                image: image.to_owned(),
+            });
+        }
+        file.set_permissions(Permissions::from_mode(0o600))
+            .and_then(|()| file.set_len(size))
+            .map_err(io)?;
+        let formatted = self.run_mkfs(image);
         if formatted.is_err() {
             // Half an image would pass for a real one at the next attempt.
-            let _ = fs::remove_file(image);
+            let _ = file.set_len(0);
         }
         formatted
     }
 
-    fn format_image(&self, image: &Path, dir: &Path) -> Result<()> {
-        // Everything in this directory would be copied into the new
-        // filesystem: an interrupted attempt may leave it behind, but only an
-        // empty one is ever reused.
-        let empty = dir.join(".ramet-empty-root");
+    fn run_mkfs(&self, image: &Path) -> Result<()> {
+        // Everything in this directory is copied into the new filesystem,
+        // its permissions included: private, and empty.
+        let empty = std::env::temp_dir().join(format!("ramet-rootdir-{}", std::process::id()));
         let _ = fs::remove_dir(&empty);
         fs::DirBuilder::new()
             .mode(0o700)
@@ -378,9 +388,62 @@ pub fn has_mount_option(options: &str, name: &str) -> bool {
     })
 }
 
+/// Whether a line of the fstab text `text` has `root` as its mount point.
+fn fstab_names(text: &str, root: &Path) -> bool {
+    let root = resolve(root);
+    text.lines()
+        .map(str::trim_start)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(|line| line.split_whitespace().nth(1))
+        .any(|target| resolve(Path::new(&unescape_fstab_field(target))) == root)
+}
+
+/// An fstab field with its octal escapes (`\\040` for a space) decoded.
+fn unescape_fstab_field(field: &str) -> String {
+    let mut text = String::with_capacity(field.len());
+    let mut rest = field;
+    while let Some(at) = rest.find('\\') {
+        text.push_str(&rest[..at]);
+        let code = rest.get(at + 1..at + 4);
+        if let Some(byte) = code.and_then(|digits| u8::from_str_radix(digits, 8).ok()) {
+            text.push(char::from(byte));
+            rest = &rest[at + 4..];
+        } else {
+            text.push('\\');
+            rest = &rest[at + 1..];
+        }
+    }
+    text.push_str(rest);
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_line_for_the_root_is_found_without_findmnt() {
+        let root = Path::new("/srv/ramet");
+        let fstab = "# /srv/ramet in a comment\nUUID=x / ext4 defaults 0 1\n\
+                     /var/lib/ramet/data.img /srv/ramet btrfs noauto,user 0 0\n";
+        assert!(fstab_names(fstab, root));
+        assert!(!fstab_names(
+            "# /img /srv/ramet btrfs\nUUID=x / ext4 defaults 0 1\n",
+            root
+        ));
+        assert!(fstab_names(
+            "/img /srv/my\\040data btrfs noauto 0 0\n",
+            Path::new("/srv/my data")
+        ));
+    }
+
+    #[test]
+    fn an_fstab_field_gets_its_escapes_decoded() {
+        assert_eq!(unescape_fstab_field("/srv/my\\040data"), "/srv/my data");
+        assert_eq!(unescape_fstab_field("/a\\134b"), "/a\\b");
+        assert_eq!(unescape_fstab_field("/plain"), "/plain");
+        assert_eq!(unescape_fstab_field("/odd\\x"), "/odd\\x");
+    }
 
     #[test]
     fn suggests_ten_more_gibibytes() {

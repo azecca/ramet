@@ -11,7 +11,8 @@
 set -eu
 
 INSTALL_DIR=${RAMET_INSTALL_DIR:-$HOME/.local/bin}
-SOURCE_DIR=$(cd "$(dirname "$0")" && pwd)
+# Without CDPATH: `cd` would print the directory, and SOURCE_DIR hold it twice.
+SOURCE_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 LABEL_WIDTH=14
 # Where details continue on the next line: past the mark and the label.
 PAD=$(printf "%$((LABEL_WIDTH + 5))s" '')
@@ -90,10 +91,12 @@ fi
 target=$INSTALL_DIR/ramet
 mkdir -p "$INSTALL_DIR"
 # Copied next to its destination, then renamed over it: a ramet running at
-# that moment keeps its own file, and no one ever sees half a binary.
-cp "$binary" "$target.new.$$"
-chmod 755 "$target.new.$$"
-mv -f "$target.new.$$" "$target"
+# that moment keeps its own file, and no one ever sees half a binary. mktemp
+# creates the copy under a name no one could have prepared, a link included.
+temporary=$(mktemp "$INSTALL_DIR/.ramet.XXXXXX") || die install "cannot write into $(tilde "$INSTALL_DIR")"
+cp "$binary" "$temporary"
+chmod 755 "$temporary"
+mv -f "$temporary" "$target"
 ok install "$(tilde "$target")"
 
 case ":$PATH:" in

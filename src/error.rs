@@ -277,6 +277,20 @@ pub enum Error {
     #[error("unreadable output from `docker compose config`: {0}")]
     ComposeConfigUnreadable(#[source] serde_json::Error),
 
+    /// `/etc/fstab` has a line for the data root that `findmnt` did not read.
+    #[error("/etc/fstab has a line for {}, which findmnt does not read", root.display())]
+    FstabLineUnread {
+        /// The data root.
+        root: PathBuf,
+    },
+
+    /// The data image to format already holds something.
+    #[error("{} is not empty: ramet only formats the empty image it has root create", image.display())]
+    ImageNotEmpty {
+        /// The image.
+        image: PathBuf,
+    },
+
     /// A volume ramet would store has a name that is no plain directory name,
     /// or a docker name a command would read as an option.
     #[error(
@@ -664,6 +678,13 @@ impl Error {
             Self::SudoRefused { user, .. } => format!(
                 "subvolumes and env.json files would belong to root, and {user} could no longer \
                  write to them. Rerun the command without sudo."
+            ),
+            Self::FstabLineUnread { .. } => "check it with `findmnt --verify`, and unset \
+                                              LIBMOUNT_FSTAB if it is set: ramet never adds a second line"
+                .to_owned(),
+            Self::ImageNotEmpty { image } => format!(
+                "if it holds nothing you need, remove it (`sudo rm {}`) and run `ramet setup` again",
+                image.display()
             ),
             Self::InvalidVolumeName { .. } => "each volume gets a directory of its name in the \
                                                 env's data: rename it in the compose file"

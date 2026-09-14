@@ -27,12 +27,14 @@ written by you, for projects that need it.
 Download the latest release and run the installer it contains:
 
 ```sh
-curl -fsSL https://github.com/azecca/ramet/releases/latest/download/ramet-$(uname -m)-linux.tar.gz | tar xz
-ramet-$(uname -m)-linux/install.sh
+arch=$(uname -m)
+curl -fsSL "https://github.com/azecca/ramet/releases/latest/download/ramet-$arch-linux.tar.gz" | tar xz
+"ramet-$arch-linux/install.sh"
 ```
 
 Releases carry binaries for `x86_64` and `aarch64` (64-bit ARM), and `uname -m`
-picks yours. On any other architecture, build ramet from source. That takes
+picks yours. The URL is quoted so that zsh, which escapes URLs as they are
+pasted, leaves it as it is. On any other architecture, build ramet from source. That takes
 git, a C compiler and Rust 1.98 or later; on Debian or Ubuntu:
 
 ```sh
@@ -49,15 +51,18 @@ builds, and says what is missing. The rustup line can be skipped when
 The script puts ramet in `~/.local/bin`, then runs `ramet setup`, which
 prepares the data volume:
 
-1. a sparse 10 GiB btrfs image in `~/.local/share/ramet/data.img`, which only
-   occupies what it contains (`ramet setup --size 30G` for another size);
+1. a sparse 10 GiB btrfs image, `/var/lib/ramet/data.img`, which only
+   occupies what it contains (`ramet setup --size 30G` for another size). The
+   file is yours, its directory root's: nothing running as you can swap it
+   for a link to another disk and have it mounted;
 2. the mount point `/srv/ramet` and a `noauto,user` line in `/etc/fstab`, so
    that ramet mounts the volume by itself, without privilege, and nothing is
    mounted at boot;
 3. btrfs quotas on the image, which let `ramet df` tell what each env takes.
 
-The last two steps need root: `ramet setup` shows the commands, then runs them
-through `sudo`, which asks for your password once. It never edits an existing
+Root creates the empty image, the mount point and the fstab line, and turns
+quotas on; you format the image. `ramet setup` shows the root commands, then
+runs them through `sudo`, which asks for your password once. It never edits an existing
 fstab line. `ramet setup` is the only command that asks for privilege, here
 and when you resize the volume; every other command refuses to run under
 `sudo`.

@@ -57,6 +57,9 @@ ramet new fix-y --branch fix/y    # a branch named otherwise than the env
   stay behind. Only local files git ignores, such as `.env`, are copied.
 - A clone costs almost nothing: it shares every file it has not changed.
 - Names: letters, digits, `.`, `_` and `-`, starting with a letter or digit.
+- Commands that change a project run one at a time: another one waits,
+  printing `waiting for another ramet command on project …` on standard
+  error. Wait for it rather than kill it.
 
 ## Checkpoints
 
@@ -100,7 +103,7 @@ main env and the env you stand in: run it from another env.
 - `ramet setup` (it runs sudo), `ramet init`, `ramet deinit` and `ramet
   prune` administer the machine or the project; they are not part of a task.
 - Never run ramet under `sudo`: it refuses. Never touch `/srv/ramet` or the
-  image in `~/.local/share/ramet` by hand: ramet mounts and manages them.
+  image `/var/lib/ramet/data.img` by hand: ramet mounts and manages them.
 - `ramet df` shows how full the data volume is. When it runs low, report it
   rather than delete envs.
 

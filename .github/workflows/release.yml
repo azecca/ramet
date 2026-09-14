@@ -121,8 +121,9 @@ jobs:
           Download the tarball for your machine and run the installer it contains:
 
           ```sh
-          curl -fsSL https://github.com/'"$GITHUB_REPOSITORY"'/releases/download/'"$tag"'/ramet-$(uname -m)-linux.tar.gz | tar xz
-          ramet-$(uname -m)-linux/install.sh
+          arch=$(uname -m)
+          curl -fsSL "https://github.com/'"$GITHUB_REPOSITORY"'/releases/download/'"$tag"'/ramet-$arch-linux.tar.gz" | tar xz
+          "ramet-$arch-linux/install.sh"
           ```
 
           `uname -m` picks the tarball for your machine: `x86_64` or `aarch64`.

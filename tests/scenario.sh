@@ -203,8 +203,11 @@ findmnt -no FSTYPE --mountpoint "$ROOT" 2>/dev/null | grep -qx btrfs \
 # rien ne garantit plus que ce qui est monté soit le loop jetable. On vérifie.
 SRC=$(findmnt -no SOURCE --mountpoint "$ROOT" 2>/dev/null || true)
 BACK=$(losetup -nO BACK-FILE "$SRC" 2>/dev/null || true)
-IMG=${RAMET_TEST_IMG:-/var/lib/ramet-lab/ramet/data.img}
-[ "$BACK" = "$IMG" ] || die "$ROOT n'est pas alimenté par l'image de test.
+IMG=/var/lib/ramet/data.img
+[ -e /etc/ramet-lab ] || die "pas de /etc/ramet-lab : ce n'est pas le banc de test.
+     Le scénario détruit tout sous $DATA : il refuse de tourner sur un volume
+     de données réel. Lance-le dans le banc : tests/lab.sh run."
+[ "$BACK" = "$IMG" ] || die "$ROOT n'est pas alimenté par l'image du banc.
      monté depuis : ${BACK:-$SRC}
      attendu      : $IMG
      Le scénario détruit tout sous $DATA : il refuse de tourner sur un volume

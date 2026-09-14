@@ -43,7 +43,7 @@ pub struct Args {
 /// Runs `ramet new`.
 pub fn run(ctx: &Context, args: &Args) -> Result<Outcome> {
     store::validate_name("env name", &args.name)?;
-    let mut source = store::current_env(ctx)?;
+    let (mut source, _lock) = store::current_env_locked(ctx)?;
     let layout = ctx.layout();
     let target_dir = layout.env_dir(&source.project, &args.name);
     if is_present(&target_dir) {
@@ -233,16 +233,7 @@ fn create(
     // env whose removal would take the source's worktree with it.
     env.save(layout)?;
     ui.ok(format!("subvolume {}", request.target_dir.display()));
-    if let Some(thaw) = freeze.release()?
-        && !thaw.success()
-    {
-        ui.err(format!(
-            "  {} the stack of \"{}\" was not released: {}",
-            ui.style().yellow("!"),
-            source.name,
-            thaw.last_error_line().unwrap_or("?")
-        ));
-    }
+    freeze.release_or_warn(&source.name)?;
 
     if let Some(parent) = request.target_worktree.parent()
         && !parent.exists()
@@ -281,10 +272,15 @@ fn create(
     // how many ports are published.
     let config = env.resolve(ctx, &[])?;
     let keys = config.published_ports();
-    let range = store::allocate_ports(ctx, &env.project, &env.name, keys.len(), None)?;
-    env.ports.range = Some(range);
-    env.ports.map = sequential_map(&keys, range);
-    env.save(layout)?;
+    let range = {
+        // Until env.json records the block: no other env may pick it.
+        let _ports = crate::lock::ports(ctx)?;
+        let range = store::allocate_ports(ctx, &env.project, &env.name, keys.len(), None)?;
+        env.ports.range = Some(range);
+        env.ports.map = sequential_map(&keys, range);
+        env.save(layout)?;
+        range
+    };
     ui.ok(format!("ports {range}"));
 
     let substitutions = ports::substitutions(&source.ports.map, &env.ports.map);
@@ -293,7 +289,14 @@ fn create(
     }
 
     env.regenerate(ctx, &[])?;
-    let up = env.stack(layout).command(["up", "-d"]).inherit_output();
+    let stack = env.stack(layout);
+    let up = stack.command(["up", "-d"]).inherit_output();
+    // A stack that half started holds the subvolume the rollback deletes.
+    let down = stack.command(["down", "-v", "--remove-orphans"]);
+    rollback.push(move |ctx| {
+        ctx.runner().run_unchecked(&down);
+        Ok(())
+    });
     ctx.runner().run_checked(&up)?;
     Ok(env)
 }

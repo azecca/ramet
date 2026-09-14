@@ -53,15 +53,14 @@ Host prerequisites: docker usable without sudo, and the Rust musl target.
 in it. That is what gives the result its value: if the scenario passes, ramet
 needs no privilege. `install.sh` runs as that user, as it would on a real
 machine; without sudo, `ramet setup` prints the root steps instead of running
-them. `lab.sh` then plays the administrator (creates `/srv/ramet`, adds the
-fstab line), and a second `ramet setup` mounts the volume, as the user.
+them. `lab.sh` then plays the administrator and pastes those very commands
+into a root shell (the mount point, the empty image, the fstab line), and a
+second `ramet setup` formats and mounts the volume, as the user.
 
 Two artifices remain, specific to containers: the `/dev/loopN` node, which a
 container's `/dev` lacks and which has to be created by hand, and the setuid
 bit of `mount`, which lets a user mount a `user` fstab line and which the bench
 sets by hand, as desktop distributions do.
-The data image lives in `/var/lib/ramet-lab/` (`XDG_DATA_HOME`) rather than in
-the user's home, a path no real machine uses.
 
 ### What the scenario does
 
@@ -72,7 +71,7 @@ the `main` env, worktrees go to `tests/.tmp/example.wt/`, data to
 subdirectory of the ramet repository, and `git worktree add` would create a
 worktree of ramet there.
 
-It fails loudly at the first step that does not pass, and refuses to run unless
-`/srv/ramet` is backed by the bench's image `/var/lib/ramet-lab/ramet/data.img`: it destroys
+It fails loudly at the first step that does not pass, and refuses to run
+outside the bench, which `lab.sh up` marks with `/etc/ramet-lab`: it destroys
 everything under `/srv/ramet/example/`, and must never run against a real data
 volume.

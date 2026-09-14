@@ -74,18 +74,30 @@ pub fn execute(ctx: &Context, command: &Command) -> Result<Outcome> {
 /// subvolumes and `env.json` files would belong to root, and the user could no
 /// longer write to them. A genuinely root environment (a container, a machine
 /// administered that way) stays consistent with itself and is let through;
-/// what is refused is elevation, betrayed by `SUDO_USER`.
+/// what is refused is elevation, betrayed by the variable `sudo`, `doas` or
+/// `pkexec` leaves behind. (`su -c` leaves none.)
 pub fn refuse_sudo(host: &dyn Host, command: &str) -> Result<()> {
-    if host.effective_uid() != 0 || ALLOWED_UNDER_SUDO.contains(&command) {
+    if ALLOWED_UNDER_SUDO.contains(&command) {
         return Ok(());
     }
-    match host.var("SUDO_USER").filter(|user| !user.is_empty()) {
+    match elevated_from(host) {
         Some(user) => Err(Error::SudoRefused {
             command: command.to_owned(),
             user,
         }),
         None => Ok(()),
     }
+}
+
+/// The account a root process was elevated from, when it was: `sudo` sets
+/// `SUDO_USER`, `doas` sets `DOAS_USER`, and `pkexec` sets `PKEXEC_UID`.
+pub fn elevated_from(host: &dyn Host) -> Option<String> {
+    if host.effective_uid() != 0 {
+        return None;
+    }
+    ["SUDO_USER", "DOAS_USER", "PKEXEC_UID"]
+        .iter()
+        .find_map(|name| host.var(name).filter(|value| !value.is_empty()))
 }
 
 /// Prints `error: <message>` and, when there is one, the hint that follows.

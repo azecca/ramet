@@ -48,12 +48,56 @@ fn a_label_that_leaves_the_env_is_refused_before_anything() {
 }
 
 #[test]
-fn deletes_the_subvolume_then_recreates_it_from_the_checkpoint() {
+fn copies_the_checkpoint_beside_the_env_then_swaps_them() {
     let fx = with_checkpoint();
+    std::fs::write(fx.env_dir("main").join("written-since"), "x").unwrap();
     assert_eq!(run(&fx, "c1", true, false).unwrap(), Outcome::Done);
     let log = fx.btrfs.0.borrow();
-    assert_eq!(log.deleted, ["main"]);
-    assert_eq!(log.snapshots, [("main@c1".into(), "main".into(), false)]);
+    assert_eq!(
+        log.snapshots,
+        [("main@c1".into(), "main@.restoring".into(), false)]
+    );
+    assert_eq!(
+        log.deleted,
+        ["main@.replaced"],
+        "the old data, once replaced"
+    );
+    assert!(!fx.env_dir("main").join("written-since").exists());
+    assert!(!fx.env_dir("main@.restoring").exists());
+}
+
+#[test]
+fn a_failed_copy_of_the_checkpoint_leaves_the_env_as_it_was() {
+    let fx = with_checkpoint();
+    std::fs::write(fx.env_dir("main").join("precious"), "x").unwrap();
+    fx.btrfs.0.borrow_mut().fail_snapshots = true;
+    assert!(run(&fx, "c1", true, false).is_err());
+    assert!(fx.env_dir("main").join("precious").exists(), "data lost");
+    assert!(fx.btrfs.0.borrow().deleted.is_empty());
+}
+
+#[test]
+fn a_stack_that_will_not_stop_leaves_the_env_as_it_was() {
+    let fx = with_checkpoint();
+    std::fs::write(fx.env_dir("main").join("precious"), "x").unwrap();
+    fx.runner.fail("down");
+    assert!(run(&fx, "c1", true, false).is_err());
+    assert!(fx.env_dir("main").join("precious").exists(), "data lost");
+    assert!(
+        !fx.env_dir("main@.restoring").exists(),
+        "the unused copy goes"
+    );
+}
+
+#[test]
+fn clears_what_a_restore_cut_short_left_behind() {
+    let fx = with_checkpoint();
+    for leftover in ["main@.restoring", "main@.replaced"] {
+        std::fs::create_dir_all(fx.env_dir(leftover)).unwrap();
+    }
+    assert_eq!(run(&fx, "c1", true, false).unwrap(), Outcome::Done);
+    assert!(!fx.env_dir("main@.restoring").exists());
+    assert!(!fx.env_dir("main@.replaced").exists());
 }
 
 #[test]

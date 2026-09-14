@@ -29,10 +29,10 @@ TARGET=x86_64-unknown-linux-musl
 # là où install.sh le range pour dev.
 BUILT=/opt/ramet
 BIN=/home/dev/.local/bin/ramet
-# L'image de données de dev vit ici plutôt que dans son home : un chemin que
-# nulle machine réelle n'utilise, que le scénario exige avant de tout détruire.
-DATA_HOME=/var/lib/ramet-lab
-IMG=$DATA_HOME/ramet/data.img
+# L'image de données, où ramet la range sur toute machine.
+IMG=/var/lib/ramet/data.img
+# Ce fichier n'existe que dans le banc : le scénario l'exige avant de tout détruire.
+MARQUE=/etc/ramet-lab
 
 die()  { printf '\033[31merreur:\033[0m %s\n' "$*" >&2; exit 1; }
 info() { printf '\033[36m::\033[0m %s\n' "$*"; }
@@ -41,9 +41,9 @@ ok()   { printf '\033[32m✓\033[0m %s\n' "$*"; }
 vivant() { [ "$(docker inspect -f '{{.State.Running}}' "$LAB" 2>/dev/null)" = true ]; }
 dans()   { docker exec "$LAB" sh -c "$1"; }
 # Le banc ne prouverait pas que ramet se passe de privilèges s'il tournait en root.
-en_dev() { docker exec -u dev -e XDG_DATA_HOME="$DATA_HOME" "$LAB" sh -c "$1"; }
-# L'administrateur du banc, avec l'image de dev : ce que ferait sudo.
-en_root() { docker exec -e XDG_DATA_HOME="$DATA_HOME" "$LAB" sh -c "$1"; }
+en_dev() { docker exec -u dev "$LAB" sh -c "$1"; }
+# L'administrateur du banc : ce que ferait sudo.
+en_root() { docker exec "$LAB" sh -c "$1"; }
 
 cmd_up() {
   command -v docker >/dev/null || die "docker introuvable sur l'hôte"
@@ -83,7 +83,7 @@ cmd_up() {
   # Ce que ramet setup ne fait pas et qu'une vraie distribution fournit :
   # `mount` setuid, sans quoi un utilisateur ne monte pas même une ligne `user`.
   dans 'chmod u+s "$(command -v mount)" "$(command -v umount)"'
-  dans "mkdir -p $DATA_HOME && chown dev:dev $DATA_HOME"
+  dans "touch $MARQUE"
   ok "banc prêt : le volume de données viendra de ramet setup"
   cmd_status
 }
@@ -115,18 +115,24 @@ cmd_build() {
 
 # install.sh comme le lancerait un utilisateur, puis ramet setup. Le banc n'a
 # pas sudo : setup affiche les étapes root au lieu de les jouer. L'administrateur
-# du banc ajoute la ligne fstab ; dev monte alors le volume ; ce qui demande
-# encore root (les quotas btrfs), ramet le joue lui-même, lancé en root. Un
-# dernier setup, en tant que dev, doit trouver tout en place.
+# du banc colle ces commandes telles quelles dans un shell root (point de
+# montage, image vide pour dev, ligne fstab) ; dev formate et monte alors le
+# volume ; ce qui demande encore root (les quotas btrfs), ramet le joue
+# lui-même, lancé en root. Un dernier setup, en tant que dev, doit trouver tout
+# en place.
 cmd_install() {
   info "install.sh, en tant que dev"
-  if en_dev "cd /work/ramet && RAMET_BINARY=$BUILT sh install.sh"; then
+  local out
+  if out=$(en_dev "cd /work/ramet && RAMET_BINARY=$BUILT sh install.sh" 2>&1); then
+    echo "$out"
     return 0
   fi
-  info "étapes root jouées par l'administrateur du banc"
-  local line
-  line=$(en_dev "$BIN doctor --print-fstab")
-  dans "mkdir -p $MNT && { grep -qsF ' $MNT ' /etc/fstab || printf '%s\n' '$line' >> /etc/fstab; }"
+  echo "$out"
+  info "étapes root jouées par l'administrateur du banc, telles que setup les affiche"
+  local etapes
+  etapes=$(echo "$out" | sed -n '/As root, run:/,/run the same `ramet setup` again/p' | sed '1d;$d' | sed 's/^ *//')
+  [ -n "$etapes" ] || die "setup n'a affiché aucune commande root"
+  echo "$etapes" | docker exec -i "$LAB" sh -e || die "les commandes root affichées par setup échouent"
   en_dev "$BIN setup" >/dev/null 2>&1 || en_root "$BIN setup" >/dev/null || die "ramet setup échoue en root"
   en_dev "$BIN setup" || die "ramet setup échoue encore après les étapes root"
 }
@@ -178,7 +184,7 @@ cmd_run() {
   en_dev "cd /work/ramet && $BIN doctor" || die "doctor signale une erreur"
   echo
   info "scénario d'intégration"
-  en_dev "cd /work/ramet && RAMET_BIN=$BIN RAMET_TEST_IMG=$IMG tests/scenario.sh $*"
+  en_dev "cd /work/ramet && RAMET_BIN=$BIN tests/scenario.sh $*"
 }
 
 cmd_shell()  { vivant || die "banc éteint"; docker exec -it "$LAB" sh -c 'cd /work/ramet 2>/dev/null; exec sh'; }

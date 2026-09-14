@@ -69,6 +69,24 @@ impl<'a> Freeze<'a> {
         Ok(unpause)
     }
 
+    /// Thaws the stack now, as [`release`](Self::release) does, and warns
+    /// on standard error when `unpause` failed: the stack of `env_name` may
+    /// still be frozen, and nothing else would say so.
+    pub(crate) fn release_or_warn(self, env_name: &str) -> Result<()> {
+        let ui = self.ctx.ui();
+        if let Some(thaw) = self.release()?
+            && !thaw.success()
+        {
+            ui.err(format!(
+                "  {} the stack of \"{env_name}\" was not released: {}; `ramet compose unpause` \
+                 releases it",
+                ui.style().yellow("!"),
+                thaw.last_error_line().unwrap_or("?")
+            ));
+        }
+        Ok(())
+    }
+
     fn thaw(&mut self) -> Option<Output> {
         let stack = self.stack.take()?;
         Some(self.ctx.runner().run_unchecked(&stack.command(["unpause"])))

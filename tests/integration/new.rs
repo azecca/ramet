@@ -142,6 +142,23 @@ fn starts_the_new_stack() {
 }
 
 #[test]
+fn a_stack_that_fails_to_start_is_stopped_before_its_data_goes() {
+    let fx = Fixture::with_main_env();
+    fx.runner.fail("up");
+    assert!(create(&fx, "feat-a", |_| {}).is_err());
+    let verbs = fx.runner.verbs_for("feat-a");
+    let up = verbs
+        .iter()
+        .position(|verb| verb == "up")
+        .expect("up tried");
+    assert!(
+        verbs[up..].iter().any(|verb| verb == "down"),
+        "containers left on a deleted subvolume: {verbs:?}"
+    );
+    assert!(!fx.env_dir("feat-a").exists());
+}
+
+#[test]
 fn an_uncommitted_ramet_json_comes_along() {
     // A project that keeps `.ramet.json` out of its repository still runs
     // the same way in every env.

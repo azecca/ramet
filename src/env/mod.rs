@@ -152,6 +152,8 @@ impl Env {
         let config = self.resolve(ctx, extra_profiles)?;
         let keys = config.published_ports();
         if keys.iter().any(|key| !self.ports.map.contains_key(key)) {
+            // Until env.json records the ports: no other env may pick them.
+            let _ports = crate::lock::ports(ctx)?;
             self.extend_ports(ctx, &keys, &config)?;
             self.save(ctx.layout())?;
         }

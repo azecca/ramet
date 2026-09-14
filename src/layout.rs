@@ -17,6 +17,16 @@ use std::path::{Path, PathBuf};
 /// Default mount point of the btrfs data volume.
 pub const DEFAULT_ROOT: &str = "/srv/ramet";
 
+/// The image file backing the data volume.
+///
+/// Its directory belongs to root, the file to the user. `mount` resolves the
+/// path of a `user,loop` fstab line with root's rights: in a directory the
+/// user could write, any program running as them could swap the file for a
+/// link to a disk or another user's image and have it mounted (CVE-2026-27456,
+/// fixed in util-linux 2.41.4 and 2.42.2). One image per machine, like the
+/// mount point.
+pub const DATA_IMAGE: &str = "/var/lib/ramet/data.img";
+
 /// Size announced for a freshly created data image, in bytes. The image is
 /// sparse: it only occupies what it contains.
 pub const DATA_IMAGE_SIZE: u64 = 10 * GIB;
@@ -66,15 +76,9 @@ impl Layout {
         }
     }
 
-    /// The standard layout: [`DEFAULT_ROOT`], backed by
-    /// `$XDG_DATA_HOME/ramet/data.img` (or `~/.local/share/ramet/data.img`).
-    pub fn from_environment() -> Self {
-        let data_home = std::env::var_os("XDG_DATA_HOME")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| std::env::home_dir().map(|home| home.join(".local/share")))
-            .unwrap_or_else(|| PathBuf::from(".local/share"));
-        Self::new(DEFAULT_ROOT, data_home.join("ramet").join("data.img"))
+    /// The standard layout: [`DEFAULT_ROOT`], backed by [`DATA_IMAGE`].
+    pub fn standard() -> Self {
+        Self::new(DEFAULT_ROOT, DATA_IMAGE)
     }
 
     /// Mount point of the btrfs data volume.
@@ -173,7 +177,7 @@ mod tests {
     use super::*;
 
     fn layout() -> Layout {
-        Layout::new("/srv/ramet", "/home/u/.local/share/ramet/data.img")
+        Layout::standard()
     }
 
     #[test]
@@ -215,7 +219,7 @@ mod tests {
     fn fstab_line_describes_the_expected_mount() {
         assert_eq!(
             layout().fstab_line(),
-            "/home/u/.local/share/ramet/data.img /srv/ramet btrfs \
+            "/var/lib/ramet/data.img /srv/ramet btrfs \
              noauto,user,exec,loop,noatime,discard=async,user_subvol_rm_allowed 0 0\n"
         );
     }

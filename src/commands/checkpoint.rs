@@ -28,7 +28,7 @@ pub struct Args {
 
 /// Runs `ramet checkpoint`.
 pub fn run(ctx: &Context, args: &Args) -> Result<Outcome> {
-    let mut env = store::current_env(ctx)?;
+    let (mut env, _lock) = store::current_env_locked(ctx)?;
     store::validate_name("label", &args.label)?;
     let destination = ctx
         .layout()
@@ -48,7 +48,7 @@ pub fn run(ctx: &Context, args: &Args) -> Result<Outcome> {
     // On failure, dropping the freeze thaws the stack all the same.
     ctx.subvolumes()
         .snapshot_read_only(&env.dir(ctx.layout()), &destination)?;
-    freeze.release()?;
+    freeze.release_or_warn(&env.name)?;
 
     env.checkpoints.insert(
         args.label.clone(),

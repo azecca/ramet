@@ -31,6 +31,7 @@ pub mod git;
 pub mod host;
 pub mod interrupt;
 pub mod layout;
+pub mod lock;
 pub mod ports;
 pub mod process;
 pub mod settings;

@@ -46,7 +46,6 @@ fn prepares_a_bare_machine_in_one_go() {
     let image = fx.layout().data_image().to_owned();
     assert_eq!(fs::metadata(&image).unwrap().len(), DATA_IMAGE_SIZE);
     assert_eq!(mode(&image), 0o600, "every env's data is in the image");
-    assert_eq!(mode(image.parent().unwrap()), 0o700);
     let mkfs = fx
         .runner
         .argvs()
@@ -58,23 +57,35 @@ fn prepares_a_bare_machine_in_one_go() {
         "the volume's root must belong to the user: {mkfs:?}"
     );
     assert_eq!(mkfs.last().unwrap(), &image.display().to_string());
+    let seed = &mkfs[mkfs.iter().position(|arg| arg == "--rootdir").unwrap() + 1];
     assert!(
-        !fx.base.join(".ramet-empty-root").exists(),
+        !std::path::Path::new(seed).exists(),
         "the empty directory is removed"
     );
 
     let root = fx.root.display().to_string();
+    let base = fx.base.display().to_string();
+    let words = |line: &str| line.split(' ').map(str::to_owned).collect::<Vec<_>>();
     assert_eq!(
         fx.root_commands(),
         [
-            vec!["sudo".to_owned(), "mkdir".into(), "-p".into(), root],
-            vec![
-                "sudo".into(),
-                "tee".into(),
-                "-a".into(),
-                "/etc/fstab".into()
-            ],
+            words(&format!("sudo mkdir -p {root}")),
+            // The image's directory is root's: no one else can swap the file.
+            words(&format!("sudo install -d -m 0755 {base}")),
+            words(&format!(
+                "sudo install -m 0600 -o 1000 -g 1000 /dev/null {}",
+                image.display()
+            )),
+            words("sudo tee -a /etc/fstab"),
         ]
+    );
+    assert!(
+        fx.runner
+            .argvs()
+            .iter()
+            .all(|argv| !argv[0].ends_with("sudo")
+                || (argv[0].starts_with('/') && argv[1].starts_with('/'))),
+        "sudo and what it runs come from the system's directories"
     );
     assert!(
         machine
@@ -123,12 +134,10 @@ fn takes_away_what_other_users_could_read() {
         fs::set_permissions(path, fs::Permissions::from_mode(bits)).unwrap();
     };
     open(&image, 0o644);
-    open(image.parent().unwrap(), 0o755);
     open(&fx.root, 0o755);
 
     assert_eq!(setup(&fx), 0, "{}{}", fx.stdout(), fx.stderr());
     assert_eq!(mode(&image), 0o600);
-    assert_eq!(mode(image.parent().unwrap()), 0o700);
     assert_eq!(mode(&fx.root), 0o700);
     assert!(fx.root_commands().is_empty(), "no privilege needed");
     assert!(
@@ -155,17 +164,29 @@ fn completes_a_half_prepared_machine_without_touching_fstab() {
 
     assert_eq!(setup(&fx), 0, "{}{}", fx.stdout(), fx.stderr());
     assert!(fx.layout().data_image().exists());
-    assert_eq!(
-        fx.root_commands(),
-        [vec![
-            "sudo".to_owned(),
-            "mkdir".into(),
-            "-p".into(),
-            fx.root.display().to_string()
-        ]]
-    );
+    let programs: Vec<String> = fx
+        .root_commands()
+        .into_iter()
+        .map(|argv| argv[1].clone())
+        .collect();
+    assert_eq!(programs, ["mkdir", "install", "install"]);
     assert!(machine.borrow().appended.is_empty());
     assert!(fx.stdout().contains("line present"));
+}
+
+#[test]
+fn never_formats_an_image_through_a_link() {
+    // The image's directory is root's, so no one should manage this; if
+    // someone did, the file the link points to must come out untouched.
+    let fx = Fixture::new();
+    fx.machine().borrow_mut().fstab = Some(fx.image_fstab_line());
+    let victim = fx.base.join("victim");
+    fs::write(&victim, "").unwrap();
+    std::os::unix::fs::symlink(&victim, fx.layout().data_image()).unwrap();
+
+    assert_eq!(setup(&fx), 1, "{}", fx.stdout());
+    assert_eq!(fs::metadata(&victim).unwrap().len(), 0, "never grown");
+    assert!(!ran(&fx, "mkfs.btrfs"));
 }
 
 #[test]
@@ -242,11 +263,18 @@ fn without_sudo_the_root_steps_are_shown_for_the_user_to_run() {
     assert!(fx.root_commands().is_empty());
     assert!(!machine.borrow().mounted);
     assert!(
-        fx.layout().data_image().exists(),
-        "what needs no root is done"
+        !fx.layout().data_image().exists(),
+        "only root may create the image"
     );
     let out = fx.stdout();
     assert!(out.contains("sudo is not installed"), "{out}");
+    assert!(
+        out.contains(&format!(
+            "install -m 0600 -o 1000 -g 1000 /dev/null {}",
+            fx.layout().data_image().display()
+        )),
+        "{out}"
+    );
     assert!(
         out.contains(&format!("mkdir -p {}", fx.root.display())),
         "{out}"
@@ -268,7 +296,7 @@ fn a_root_environment_runs_the_steps_itself() {
         .into_iter()
         .map(|argv| argv[0].clone())
         .collect();
-    assert_eq!(programs, ["mkdir", "tee"]);
+    assert_eq!(programs, ["mkdir", "install", "install", "tee"]);
 }
 
 #[test]
@@ -305,11 +333,12 @@ fn a_volume_root_owned_by_someone_else_is_handed_over() {
         [vec![
             "sudo".to_owned(),
             "chown".into(),
-            "tester".into(),
+            "--".into(),
+            "1000:1000".into(),
             fx.root.display().to_string()
         ]]
     );
-    assert!(fx.stdout().contains("handed over to tester"));
+    assert!(fx.stdout().contains("handed over to you"));
 }
 
 #[test]

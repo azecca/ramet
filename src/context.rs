@@ -61,7 +61,7 @@ impl Context {
             runner,
             host: Box::new(SystemHost),
         };
-        Ok(Self::new(Layout::from_environment(), cwd, ui, services))
+        Ok(Self::new(Layout::standard(), cwd, ui, services))
     }
 
     /// Where ramet keeps its data.

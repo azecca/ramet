@@ -17,6 +17,7 @@ mod dispatch;
 mod doctor;
 mod init;
 mod listing;
+mod locking;
 mod new;
 mod ports;
 mod prune;

@@ -496,6 +496,7 @@ fn execute(ctx: &Context, args: &Args, plan: &Plan, rollback: &mut Rollback<'_>)
     rollback.push(move |_| {
         std::fs::remove_dir(&undo_dir).map_err(|source| Error::io(&undo_dir, source))
     });
+    let _project = crate::lock::project(ctx, &plan.project)?;
 
     let env_dir = layout.env_dir(&plan.project, &plan.env_name);
     ctx.subvolumes().create(&env_dir)?;
@@ -526,6 +527,12 @@ fn execute(ctx: &Context, args: &Args, plan: &Plan, rollback: &mut Rollback<'_>)
         ui.ok(format!("volume `{volume}` migrated from {source}"));
     }
 
+    // Until env.json records the block: no other env may pick it.
+    let ports_lock = if args.remap_ports {
+        Some(crate::lock::ports(ctx)?)
+    } else {
+        None
+    };
     let ports = if args.remap_ports {
         let keys = plan.config.published_ports();
         let range = store::allocate_ports(ctx, &plan.project, &plan.env_name, keys.len(), None)?;
@@ -554,6 +561,7 @@ fn execute(ctx: &Context, args: &Args, plan: &Plan, rollback: &mut Rollback<'_>)
         extra: serde_json::Map::new(),
     };
     env.save(layout)?;
+    drop(ports_lock);
     env.regenerate(ctx, &[])?;
     let up = env.stack(layout).command(["up", "-d"]).inherit_output();
     ctx.runner().run_checked(&up)?;

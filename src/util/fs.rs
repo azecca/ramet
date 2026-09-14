@@ -60,14 +60,6 @@ pub fn relative_to(path: &Path, root: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-/// Finds `program` in `PATH`, like `which`.
-pub fn which(program: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join(program))
-        .find(|candidate| is_executable(candidate))
-}
-
 /// Whether `path` is a file someone may execute.
 pub fn is_executable(path: &Path) -> bool {
     fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
@@ -430,11 +422,5 @@ mod tests {
         let broken = dir.path().join("broken.json");
         fs::write(&broken, "{not json").unwrap();
         assert_eq!(read_json::<serde_json::Value>(&broken), None);
-    }
-
-    #[test]
-    fn which_finds_a_program_in_path() {
-        assert!(which("sh").is_some());
-        assert!(which("ramet-program-that-does-not-exist").is_none());
     }
 }

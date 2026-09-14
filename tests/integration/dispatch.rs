@@ -277,6 +277,49 @@ fn a_genuinely_root_environment_is_let_through() {
 }
 
 #[test]
+fn doas_and_pkexec_are_refused_as_sudo_is() {
+    for (variable, value) in [("DOAS_USER", "alex"), ("PKEXEC_UID", "1000")] {
+        let fx = Fixture::with_main_env();
+        fx.host.0.euid.set(0);
+        mounted(&fx);
+        fx.host
+            .0
+            .vars
+            .borrow_mut()
+            .insert(variable.into(), value.into());
+        assert_eq!(ramet(&fx, &["compose", "ps"]), 1, "{variable}");
+        assert!(fx.stderr().contains("root"), "{}", fx.stderr());
+    }
+}
+
+#[test]
+fn doctor_under_sudo_leaves_the_project_alone() {
+    // Checking it runs git and compose on the user's files, as root.
+    let fx = Fixture::with_main_env();
+    mounted(&fx);
+    fx.host.0.euid.set(0);
+    fx.host
+        .0
+        .vars
+        .borrow_mut()
+        .insert("SUDO_USER".into(), "alex".into());
+    ramet(&fx, &["doctor"]);
+    assert!(
+        fx.stdout().contains("not checked under sudo"),
+        "{}",
+        fx.stdout()
+    );
+    assert!(
+        fx.runner
+            .argvs()
+            .iter()
+            .all(|argv| argv[0] != "git" || argv[1] == "--version"),
+        "{:?}",
+        fx.runner.argvs()
+    );
+}
+
+#[test]
 fn doctor_stays_allowed_under_sudo() {
     let fx = Fixture::new();
     fx.host.0.euid.set(0);

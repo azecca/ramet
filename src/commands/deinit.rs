@@ -21,7 +21,7 @@ pub struct Args {
 
 /// Runs `ramet deinit`.
 pub fn run(ctx: &Context, args: &Args) -> Result<Outcome> {
-    let env = store::current_env(ctx)?;
+    let (env, _lock) = store::current_env_locked(ctx)?;
     if !env.is_primary() {
         return Err(Error::DeinitOutsideMainClone {
             main_clone: store::main_clone(ctx, &env),

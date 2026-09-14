@@ -359,6 +359,10 @@ impl ramet::host::Host for FakeHost {
             .then(|| Path::new("/usr/bin").join(program))
     }
 
+    fn system_program(&self, program: &str) -> Option<PathBuf> {
+        self.find_program(program)
+    }
+
     fn space(&self, _path: &Path) -> io::Result<ramet::host::Space> {
         let free = self.0.free_bytes.get();
         Ok(ramet::host::Space {
@@ -382,6 +386,10 @@ impl ramet::host::Host for FakeHost {
 
     fn effective_uid(&self) -> u32 {
         self.0.euid.get()
+    }
+
+    fn effective_gid(&self) -> u32 {
+        1000
     }
 
     fn sysfs(&self) -> PathBuf {
@@ -424,14 +432,35 @@ impl Fixture {
         )
     }
 
-    /// Commands run as root, through sudo or directly, as argument vectors.
+    /// Commands run as root, through sudo or directly, as argument vectors,
+    /// their programs by name: `["sudo", "mkdir", "-p", …]`.
     pub(crate) fn root_commands(&self) -> Vec<Vec<String>> {
         self.runner
             .argvs()
             .into_iter()
-            .filter(|argv| ["sudo", "mkdir", "tee", "chown"].contains(&argv[0].as_str()))
+            .map(|argv| program_names(&argv))
+            .filter(|argv| ["sudo", "mkdir", "tee", "chown", "install"].contains(&argv[0].as_str()))
             .collect()
     }
+}
+
+/// `argv` with its program, and the one sudo runs, written by name only.
+pub(crate) fn program_names(argv: &[String]) -> Vec<String> {
+    let name = |arg: &String| {
+        Path::new(arg)
+            .file_name()
+            .map_or_else(|| arg.clone(), |name| name.to_string_lossy().into_owned())
+    };
+    let mut names = argv.to_vec();
+    if let Some(first) = names.first_mut() {
+        *first = name(first);
+    }
+    if names.first().is_some_and(|first| first == "sudo")
+        && let Some(second) = names.get_mut(1)
+    {
+        *second = name(second);
+    }
+    names
 }
 
 /// Where the quota groups of the test volume's btrfs are, under sysfs.
@@ -474,7 +503,7 @@ impl Fixture {
         let shared = Rc::clone(&state);
         // Registered before the machine's handler, which it answers ahead of.
         self.runner.handle(move |cmd| {
-            let argv = cmd.argv();
+            let argv = program_names(&cmd.argv());
             let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
             let argv = argv.strip_prefix(&["sudo"]).unwrap_or(&argv);
             let size = |text: &str| ramet::util::size::parse_size(text).expect("a size");
@@ -497,7 +526,7 @@ impl Fixture {
                     }
                     Some(Output::success_with(""))
                 }
-                ["truncate", "-s", new, path] => {
+                ["truncate", "-c", "-s", new, path] => {
                     fs::OpenOptions::new()
                         .write(true)
                         .open(path)
@@ -579,7 +608,9 @@ fn simulate_machine(machine: &RefCell<Machine>, root: &Path, cmd: &Cmd) -> Optio
             Some(Output::failure(1, "sudo: 3 incorrect password attempts"))
         }
         "sudo" => Some(as_root(machine, root, &argv[1..], cmd.input_text())),
-        "mkdir" | "tee" | "chown" => Some(as_root(machine, root, &argv, cmd.input_text())),
+        "mkdir" | "tee" | "chown" | "install" => {
+            Some(as_root(machine, root, &argv, cmd.input_text()))
+        }
         _ => None,
     }
 }
@@ -609,8 +640,14 @@ fn as_root(
     argv: &[String],
     input: Option<&str>,
 ) -> Output {
-    match argv[0].as_str() {
+    let program = program_names(argv).swap_remove(0);
+    match program.as_str() {
         "mkdir" => fs::create_dir_all(argv.last().expect("a directory")).expect("mkdir"),
+        "install" if argv.iter().any(|arg| arg == "-d") => {
+            fs::create_dir_all(argv.last().expect("a directory")).expect("install -d");
+        }
+        // `install … /dev/null <image>`: an empty file.
+        "install" => fs::write(argv.last().expect("a file"), "").expect("install"),
         "tee" => {
             let text = input.unwrap_or_default();
             let mut state = machine.borrow_mut();
@@ -823,6 +860,11 @@ impl Fixture {
 
     /// A checkpoint directory holding a frozen copy of its env's env.json,
     /// as a real snapshot would.
+    /// The subvolume of `name` under the demo project, env or checkpoint.
+    pub(crate) fn env_dir(&self, name: &str) -> PathBuf {
+        self.layout().env_dir(PROJECT, name)
+    }
+
     pub(crate) fn checkpoint_dir(&self, env: &str, label: &str) -> PathBuf {
         let layout = self.layout();
         let path = layout.checkpoint_dir(PROJECT, env, label);

@@ -24,7 +24,7 @@ pub struct Args {
 
 /// Runs `ramet rm`.
 pub fn run(ctx: &Context, args: &Args) -> Result<Outcome> {
-    let here = store::current_env(ctx)?;
+    let (here, _lock) = store::current_env_locked(ctx)?;
     let mut envs = store::load_envs(ctx.layout(), &here.project);
     let known: Vec<String> = envs.keys().cloned().collect();
     let Some(target) = envs.remove(&args.name) else {

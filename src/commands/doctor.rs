@@ -7,11 +7,14 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use crate::commands::{Outcome, prerequisites};
+use crate::commands::{Outcome, prerequisites, restore};
 use crate::context::Context;
 use crate::env::{Env, store};
 use crate::error::Result;
-use crate::layout::{LOW_SPACE_THRESHOLD, checkpoint_name, env_file_name, is_checkpoint_name};
+use crate::layout::{
+    CHECKPOINT_SEPARATOR, LOW_SPACE_THRESHOLD, Layout, checkpoint_name, env_file_name,
+    is_checkpoint_name,
+};
 use crate::storage::Quotas;
 use crate::storage::volume::{
     ImageGeometry, has_mount_option, missing_fstab_options, missing_source_file, suggested_size,
@@ -104,7 +107,14 @@ pub fn run(ctx: &Context, args: &Args) -> Result<Outcome> {
     let mut report = Report::new(ctx.ui());
     check_prerequisites(ctx, &mut report);
     if check_data_volume(ctx, &mut report) {
-        check_project(ctx, &mut report);
+        // Checking a project runs git and docker compose on its files, which
+        // root has no business doing in a repository of the user's.
+        if crate::app::elevated_from(ctx.host()).is_some() {
+            report.section("Project");
+            report.info("not checked under sudo: run `ramet doctor` as yourself");
+        } else {
+            check_project(ctx, &mut report);
+        }
     }
     Ok(report.summary())
 }
@@ -353,6 +363,12 @@ fn check_project(ctx: &Context, report: &mut Report<'_>) {
         })
         .collect();
     for name in names.iter().filter(|name| is_checkpoint_name(name)) {
+        if let Some((env_name, label)) = name.split_once(CHECKPOINT_SEPARATOR)
+            && [restore::INCOMING_LABEL, restore::OUTGOING_LABEL].contains(&label)
+        {
+            report_restore_leftover(report, layout, &project, env_name, label, &names);
+            continue;
+        }
         if !recorded.contains(name) {
             report.warn(format!(
                 "checkpoint on disk but missing from env.json: {name}"
@@ -384,6 +400,32 @@ fn check_project(ctx: &Context, report: &mut Report<'_>) {
     }
 }
 
+/// Reports what a `ramet restore` cut short left beside the env `env_name`:
+/// a copy of a checkpoint never swapped in, or the data it replaced.
+fn report_restore_leftover(
+    report: &mut Report<'_>,
+    layout: &Layout,
+    project: &str,
+    env_name: &str,
+    label: &str,
+    names: &BTreeSet<String>,
+) {
+    let leftover = layout.env_dir(project, &checkpoint_name(env_name, label));
+    let env_dir = layout.env_dir(project, env_name);
+    if label == restore::OUTGOING_LABEL && !names.contains(env_name) {
+        report.error(format!(
+            "a restore was cut short while swapping the data of \"{env_name}\": `mv {} {}` puts it back",
+            leftover.display(),
+            env_dir.display()
+        ));
+    } else {
+        report.warn(format!(
+            "left by a restore of \"{env_name}\" cut short: {}; the next restore deletes it",
+            leftover.display()
+        ));
+    }
+}
+
 /// Reports on one env: its subvolume, its worktree and its volumes.
 fn check_env(ctx: &Context, report: &mut Report<'_>, env: &Env, live: &BTreeSet<PathBuf>) {
     let layout = ctx.layout();
@@ -393,6 +435,22 @@ fn check_env(ctx: &Context, report: &mut Report<'_>, env: &Env, live: &BTreeSet<
         report.ok(format!("subvolume {}", dir.display()));
     } else {
         report.error(format!("{} is not a btrfs subvolume", dir.display()));
+    }
+    // What a process killed while the stack was frozen leaves: every client
+    // of the env hangs without a word.
+    let paused: Vec<String> = ctx
+        .compose()
+        .containers(&env.compose_project())
+        .into_iter()
+        .filter(|container| container.state == "paused")
+        .map(|container| container.service)
+        .collect();
+    if !paused.is_empty() {
+        report.error(format!(
+            "paused, left frozen by a command that did not finish: {}; \
+             `ramet compose unpause` in the env's worktree releases them",
+            paused.join(", ")
+        ));
     }
 
     if !env.worktree.is_dir() {
