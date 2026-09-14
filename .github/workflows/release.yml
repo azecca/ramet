@@ -5,8 +5,10 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+# Read-only by default: the build runs third-party actions and dependencies'
+# build scripts, so only the job that publishes the release may write.
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -54,14 +56,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master, 2026-09
         with:
           toolchain: "1.98"
           targets: ${{ matrix.target }}
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
 
       # Both targets link statically against the musl that rustup ships with
       # them. x86_64 is native and links with the runner's cc; aarch64 is
@@ -87,7 +85,7 @@ jobs:
           echo "--- the binary is static:"
           file "$dir/ramet"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ramet-${{ matrix.arch }}
           path: |
@@ -99,8 +97,10 @@ jobs:
     needs: [guard, build]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           merge-multiple: true
           path: dist
