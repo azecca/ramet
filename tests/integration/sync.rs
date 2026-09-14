@@ -548,6 +548,23 @@ fn sync_never_writes_a_file_git_tracks_in_the_current_worktree() {
 }
 
 #[test]
+fn any_number_of_synced_files_is_checked_against_git() {
+    // A `node_modules` holds tens of thousands of files: as many arguments
+    // exceed what a command line can carry ("Argument list too long").
+    let (fx, feat) = with_feat_a();
+    let mut paths: Vec<String> = (0..100_000)
+        .map(|n| format!("frontend/node_modules/zod/v4/locales/file-{n:06}.d.cts"))
+        .collect();
+    paths.push("compose.yml".to_owned());
+    let tracked = fx.ctx().git().tracked(&feat.worktree, &paths).unwrap();
+    assert_eq!(
+        tracked.into_iter().collect::<Vec<_>>(),
+        ["compose.yml"],
+        "only what git tracks"
+    );
+}
+
+#[test]
 fn sync_never_writes_through_a_symbolic_link() {
     let (fx, feat) = with_feat_a();
     let elsewhere = fx.base.join("elsewhere.env");

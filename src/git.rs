@@ -175,16 +175,20 @@ impl<'a> Git<'a> {
         }
     }
 
-    /// Among `paths`, relative to `worktree`, those git tracks there.
+    /// Among the files `paths`, relative to `worktree`, those git tracks there.
+    ///
+    /// Every tracked file is listed and the two lists crossed: the paths
+    /// themselves, as arguments, would not fit on a command line once a
+    /// `node_modules` is synced.
     pub fn tracked(&self, worktree: &Path, paths: &[String]) -> Result<BTreeSet<String>> {
         if paths.is_empty() {
             return Ok(BTreeSet::new());
         }
-        let cmd = Self::git(worktree)
-            .args(["ls-files", "-z", "--"])
-            .args(paths.iter().map(|path| format!(":(literal){path}")));
+        let cmd = Self::git(worktree).args(["ls-files", "-z"]);
+        let wanted: BTreeSet<&str> = paths.iter().map(String::as_str).collect();
         Ok(split_nul(&self.runner.run_checked(&cmd)?.stdout)
             .into_iter()
+            .filter(|path| wanted.contains(path.as_str()))
             .collect())
     }
 
