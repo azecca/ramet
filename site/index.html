@@ -304,14 +304,21 @@ services:
     environment:
       APP_URL: http://app.test${RAMET_PORT_WEB:+:$RAMET_PORT_WEB}</code></pre>
     </div>
+    <p class="aside">
+      <code>${RAMET_PORT_WEB:+:$RAMET_PORT_WEB}</code> adds a colon and the port where
+      the variable is set, and nothing elsewhere:
+    </p>
     <dl class="cmds">
       <div><dt><code>main</code></dt><dd><code>http://app.test</code>, the project's usual port: the variable is unset, as without ramet.</dd></div>
       <div><dt><code>feat-price</code></dt><dd><code>http://app.test:21000</code>, the port of this env.</dd></div>
     </dl>
     <p class="aside">
-      <strong>Behind Traefik?</strong> It sees the containers of every env. The
-      <a href="https://github.com/azecca/ramet#addresses-of-an-env">README</a> shows
-      the line that keeps it to its own.
+      <strong>Before you start:</strong> write the variable where compose reads it,
+      not in a <code>.env</code> the application loads by itself; a browser treats
+      each port as another site; a Traefik reading the docker socket must be kept
+      to its own env. The
+      <a href="https://github.com/azecca/ramet#addresses-of-an-env">README</a> covers
+      each of them.
     </p>
   </section>
 

@@ -13,7 +13,10 @@ stack. A developer or an AI agent works there without touching anything else;
 The project itself is never modified: no file is added to the repository, the
 `compose.yml` stays as it is, and a plain `docker compose up` keeps working.
 The only file ramet reads from the project is an optional `.ramet.json`,
-written by you, for projects that need it.
+written by you, for projects that need it. One case always needs a change of
+yours: addresses a browser opens on a host name other than `localhost`, such
+as those behind a reverse proxy, which must carry each env's port; see
+[Addresses of an env](#addresses-of-an-env).
 
 ## Requirements
 
@@ -124,19 +127,32 @@ created: `ramet compose up -d` applies the changes.
 
 ## Addresses of an env
 
-Each env publishes its ports on host ports of its own. Most addresses follow
-by themselves: containers reach each other by service name, and
-`localhost:<port>` is rewritten in the copied files. An address on another
-host does not: the one a browser opens through a reverse proxy, an OAuth
-redirect URI, a CORS origin. It must carry the env's port, and ramet does not
-guess where it is written. Name the port in `.ramet.json`:
+Each env publishes its ports on host ports of its own, which `ramet ls` lists.
+Most of the configuration follows without a change: containers reach each
+other by service name (`http://keycloak:8080`), and `localhost:<port>` is
+rewritten in the copied files. An address with any other host name does not
+follow: the URL a browser opens through a reverse proxy, an OAuth issuer or
+redirect URI, a CORS origin. Where the proxy's port 80 is published on 21000,
+`http://app.test` must become `http://app.test:21000`.
+
+ramet does not guess where such addresses are written: it gives you the port,
+you write it where it belongs, once. It changes none of your files, and they
+keep working without ramet.
+
+### 1. Name the port
+
+In `.ramet.json`:
 
 ```json
 { "ports": { "web": "proxy:80" } }
 ```
 
-then write its variable where the address is, in a compose file or in the
-`.env` compose reads:
+`proxy:80` is a port the compose files publish: the service, then the port
+inside its container, as `ramet ls` shows it (`localhost:21000 → proxy:80`).
+`web` is a name of your choice, which gives the variable `RAMET_PORT_WEB`. One
+name serves every host name routed through that port: `app.test`, `auth.test`…
+
+### 2. Write the variable
 
 ```yaml
 services:
@@ -145,37 +161,82 @@ services:
       APP_URL: http://app.test${RAMET_PORT_WEB:+:$RAMET_PORT_WEB}
 ```
 
+`${RAMET_PORT_WEB:+:$RAMET_PORT_WEB}` stands for a colon and the port where
+the variable is set, and for nothing elsewhere:
+
 | env | `RAMET_PORT_WEB` | `APP_URL` |
 |---|---|---|
-| `main`, which keeps the project's ports | unset | `http://app.test` |
-| `feat-price`, on ports of its own | `21000` | `http://app.test:21000` |
+| the main env, which keeps the project's ports | unset | `http://app.test` |
+| `feat-price`, or any env `ramet new` creates | `21000` | `http://app.test:21000` |
 | a plain `docker compose up`, without ramet | unset | `http://app.test` |
 
-- `web` is a name of your choice, which gives `RAMET_PORT_WEB`; `proxy:80` is
-  the service and the port inside its container, as `ramet ls` shows them.
-- The variable is set only in an env with ports of its own. Anywhere else it
-  is unset, whatever the shell holds, so the project runs the same for someone
-  who does not use ramet. `${RAMET_PORT_WEB:-80}` gives the port number in
-  every case.
-- Compose interpolates the variable, the application never sees it. A file the
-  application reads by itself, such as a `.env` loaded by Vite or dotenv, gets
-  the address through the service's `environment`, which both let win over
-  their files.
-- `ramet ls` shows the variable next to its port, and `ramet doctor` reports a
-  name whose port is not published.
+The variable is set only in an env with ports of its own: every env `ramet new`
+creates, and the main env only if `ramet init --remap-ports` gave it some.
+Anywhere else it is unset, even if you export it in your shell. For a bare port
+number, write the project's own port as the default: `${RAMET_PORT_WEB:-80}`.
 
-ramet also resolves the compose files under the env's project name, so
-`${COMPOSE_PROJECT_NAME}` is the stack's (`shop-feat-price`). A reverse proxy
-that finds containers through the docker socket, such as Traefik, sees those of
-every env, and sends part of the requests to containers it cannot reach. Keep
-it to its own env:
+Where to write it:
+
+- **In the compose files, and in the `.env` next to them that compose reads**:
+  as above. ramet reads the same files as `docker compose up`,
+  `docker-compose.override.yml` included, unless `compose.files` lists them.
+- **Not in a file the application reads by itself**: an `env_file`, a
+  `backend/.env` loaded by dotenv, a `frontend/.env` loaded by Vite. Compose
+  replaces nothing in those. Set the value in the service's `environment`
+  instead: it wins over `env_file`, and dotenv and Vite keep a variable already
+  set rather than their file's.
+- **Only in what a browser sees.** An address a container uses to reach
+  another keeps the service name (`http://keycloak:8080` for fetching keys),
+  even when the same application also needs the public one (the token issuer,
+  `http://auth.test:21000/realms/app`). A bare host name compared with the
+  request's `Host` header, port removed, stays without a port. Traefik's
+  `` Host(`app.test`) `` rules stay as they are: Traefik ignores the port.
+
+### 3. Keep the proxy to its own env
+
+A proxy that finds containers through the docker socket, such as Traefik, sees
+those of every env on the machine, and sends part of the requests to
+containers it cannot reach: requests hang, then fail with a 504. Restrict it
+to the containers of its own compose project, in every env. ramet resolves the
+compose files under the env's project name, so `${COMPOSE_PROJECT_NAME}` is the
+one compose labels the containers with (`shop-feat-price`); without ramet, it
+is the usual project name, and the restriction still holds.
 
 ```yaml
 services:
   proxy:
     command:
+      # `command` replaces the whole list: repeat the proxy's other options.
       - "--providers.docker.constraints=Label(`com.docker.compose.project`,`${COMPOSE_PROJECT_NAME}`)"
 ```
+
+### 4. Apply it
+
+- ramet reads the `.ramet.json` of each env's own worktree. Committed, it
+  reaches a branch as any file does, once merged into it. Kept out of git,
+  `ramet new` and `ramet sync` copy it along with the local files, whatever
+  `sync` lists. A file added to git but not committed yet does neither.
+- In an env that already exists, `ramet sync` brings the changed local files,
+  then `ramet compose up -d` recreates the containers, which read their
+  environment when they are created.
+- `ramet ls` shows the variable next to its port. A name whose port is not
+  published gets a warning from `ramet compose` and from `ramet doctor`.
+
+### 5. In the browser
+
+To a browser, an origin is a scheme, a host and a port: `http://app.test:21000`
+is another site than `http://app.test`.
+
+- What was set up for one origin does not carry over. Add each env's origin,
+  port included:
+  - OAuth redirect URIs and web origins. Registered in a database, as in
+    Keycloak, they are in the env's copy of it: update them in that env, or
+    have the configuration the project imports at start-up use the variable.
+  - Chrome's `unsafely-treat-insecure-origin-as-secure` flag, which an
+    application served over plain HTTP may need for the Web Crypto API
+    (keycloak-js with PKCE, for one).
+- Cookies ignore the port: signing in to one env may sign you out of another.
+  A private window or another browser profile keeps them apart.
 
 ## `.ramet.json`
 
@@ -214,7 +275,7 @@ and which local files to sync. Every key is optional:
   pointing to the same place, never followed.
 
 Commit the file with the project, or keep it to yourself: when git does not
-track it, `ramet new` copies it into every new env like the other local files.
+track it, `ramet new` and `ramet sync` copy it like the other local files.
 ramet reads the `.ramet.json` of each env's own worktree, so a branch that
 reorganizes its compose files brings its own. An unknown key is an error, not
 a silently ignored setting.

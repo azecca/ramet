@@ -41,11 +41,63 @@ compose's exit code.
 
 Each env has host ports of its own: do not assume the project's usual ones.
 Read them from `published` in `ramet ls --json`. The env's `.env` files were
-copied with their `localhost:<port>` rewritten to the env's ports. An address
-on another host (`http://app.test`) is not rewritten: when it must carry the
-env's port, the project names that port in `.ramet.json` (`"ports": {"web":
-"proxy:80"}`) and writes `${RAMET_PORT_WEB}` in its compose files; `variables`
-in `published` lists them. Never edit these files to hard-code an env's port.
+copied with their `localhost:<port>` rewritten to the env's ports.
+
+## Addresses that need the env's port
+
+An address with another host name than `localhost` is never rewritten: a URL
+a browser opens through a reverse proxy (`http://app.test`), an OAuth issuer
+or redirect URI, a CORS origin. In an env where the proxy's port 80 is
+published on 21000, it must read `http://app.test:21000`. Symptoms when it
+does not: redirects to the main env, CORS errors, a login that fails, a blank
+page. Never hard-code an env's port in a file: the same files serve every env,
+and the port differs in each.
+
+The project gives the port a name in `.ramet.json`, and the compose files use
+its variable. `"ports": {"web": "proxy:80"}` names the published port
+`service:container_port` shown by `ramet ls` and gives `RAMET_PORT_WEB`
+(`variables` in `published`). It is set in every env `ramet new` creates, and
+unset in the main env and without ramet:
+
+```yaml
+services:
+  app:
+    environment:
+      # a colon and the port where the variable is set, nothing elsewhere
+      APP_URL: http://app.test${RAMET_PORT_WEB:+:$RAMET_PORT_WEB}
+      DB_PORT: ${RAMET_PORT_DB:-5432}   # a bare port: the project's port as default
+```
+
+- Write the variable only where compose replaces it: the compose files
+  (`docker-compose.override.yml` included) and the `.env` compose reads. An
+  `env_file`, or a `.env` the application loads itself (dotenv, Vite), is
+  passed as it is: set the value in the service's `environment` instead,
+  which wins over both.
+- Add the port only to what a browser sees. Addresses between containers keep
+  the service name (`http://keycloak:8080`); a host name the application
+  compares with the `Host` header, port removed, and Traefik `Host()` rules
+  stay without a port.
+- A proxy reading the docker socket (Traefik) sees every env's containers and
+  answers 504 for part of the requests. Keep it to its own project; `command`
+  replaces the whole list, so repeat its other options:
+
+  ```yaml
+  - "--providers.docker.constraints=Label(`com.docker.compose.project`,`${COMPOSE_PROJECT_NAME}`)"
+  ```
+
+- `.ramet.json` must be in each env's worktree: committed and merged into the
+  branch, or kept out of git so that `ramet sync` copies it. A file added to
+  git but not committed reaches neither.
+- Containers read their environment when created: `ramet compose up -d` after
+  a change. A named port that is not published is reported on standard error.
+
+`.ramet.json` and the compose files belong to the project: propose the change
+and let the user decide before editing committed ones. Some fixes are the
+user's alone, in the browser: each env is another origin, port included, for
+Chrome's `unsafely-treat-insecure-origin-as-secure` flag (needed by the Web
+Crypto API over plain HTTP, as keycloak-js with PKCE does) and for OAuth
+redirect URIs stored in the env's copy of the database; cookies ignore the
+port, so envs sign each other out in the same browser.
 
 ## Parallel work
 
