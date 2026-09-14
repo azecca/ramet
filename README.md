@@ -150,7 +150,9 @@ to sync. Every key is optional:
   it. It replaces the default (`["**/.env", "**/.env.*"]`): list the `.env`
   files too if you want to keep them, or write `[]` to sync nothing. Only files
   git does not track are synced, and directories git ignores as a whole, such
-  as `node_modules/`, are searched only by a pattern that names them.
+  as `node_modules/`, are searched only by a pattern that names them. A
+  symbolic link, such as those of `node_modules/.bin`, is copied as a link
+  pointing to the same place, never followed.
 
 Commit the file with the project, or keep it to yourself: when git does not
 track it, `ramet new` copies it into every new env like the other local files.

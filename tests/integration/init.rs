@@ -286,6 +286,24 @@ fn creates_the_main_env_and_starts_it() {
 }
 
 #[test]
+fn a_stack_that_fails_to_start_is_stopped_before_its_data_goes() {
+    let fx = project("demo", &["pgdata"]);
+    fx.runner.set_volumes(&["demo_pgdata"]);
+    fx.runner.fail("up");
+    assert!(run(&fx, |_| {}).is_err());
+    let verbs = fx.runner.verbs_for("main");
+    let up = verbs
+        .iter()
+        .position(|verb| verb == "up")
+        .expect("up tried");
+    assert!(
+        verbs[up..].iter().any(|verb| verb == "down"),
+        "containers left on a deleted subvolume: {verbs:?}"
+    );
+    assert!(!fx.env_dir("main").exists());
+}
+
+#[test]
 fn remap_ports_allocates_a_block_to_the_main_env() {
     let fx = project("demo", &[]);
     fx.runner.set_config(

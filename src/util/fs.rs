@@ -124,26 +124,51 @@ pub fn replace_file(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
         })
 }
 
+/// Makes `path` a symbolic link to `target`, atomically, whatever `path` was.
+///
+/// The link is created under a temporary name beside `path`, then renamed
+/// over it: the rename replaces `path` itself, so a link already there is
+/// replaced, never written through. Creating a link never follows one either.
+pub fn replace_link(path: &Path, target: &Path) -> Result<()> {
+    let (temporary, ()) = create_temporary_with(path, |temporary| {
+        std::os::unix::fs::symlink(target, temporary)
+    })
+    .map_err(|source| Error::io(path, source))?;
+    fs::rename(&temporary, path).map_err(|source| {
+        let _ = fs::remove_file(&temporary);
+        Error::io(path, source)
+    })
+}
+
 /// Creates a file beside `path` that no other writer holds, for
-/// [`replace_file`]: `.<name>.ramet-<pid>-<n>`, trying the next `n` while the
-/// name is taken.
+/// [`replace_file`].
 fn create_temporary(path: &Path) -> io::Result<(PathBuf, File)> {
+    create_temporary_with(path, |temporary| {
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(temporary)
+    })
+}
+
+/// Creates something beside `path` with `create`, which must fail when the
+/// name is taken: `.<name>.ramet-<pid>-<n>`, trying the next `n` while it is.
+fn create_temporary_with<T>(
+    path: &Path,
+    create: impl Fn(&Path) -> io::Result<T>,
+) -> io::Result<(PathBuf, T)> {
     /// Names tried before giving up: taken names mean a crowded directory or
     /// someone guessing them, and failing is the safe answer to both.
     const ATTEMPTS: u32 = 16;
     let mut attempt = 0;
     loop {
         let temporary = temporary_name(path, NEXT_TEMPORARY.fetch_add(1, Ordering::Relaxed));
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temporary)
-        {
+        match create(&temporary) {
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists && attempt + 1 < ATTEMPTS => {
                 attempt += 1;
             }
-            opened => return opened.map(|file| (temporary, file)),
+            created => return created.map(|value| (temporary, value)),
         }
     }
 }
@@ -350,6 +375,28 @@ mod tests {
         replace_file(&target, b"new\n", 0o600).unwrap();
         assert_eq!(fs::read(&target).unwrap(), b"new\n");
         assert_eq!(fs::read_to_string(&victim).unwrap(), "precious\n");
+    }
+
+    #[test]
+    fn a_link_is_replaced_never_written_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        fs::write(&victim, "precious\n").unwrap();
+        let link = dir.path().join("nest");
+        symlink(&victim, &link).unwrap();
+        let next = NEXT_TEMPORARY.load(Ordering::Relaxed);
+        for n in next..next + 4 {
+            symlink(&victim, temporary_name(&link, n)).unwrap();
+        }
+        replace_link(&link, Path::new("../cli/nest.js")).unwrap();
+        assert_eq!(fs::read_link(&link).unwrap(), Path::new("../cli/nest.js"));
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "precious\n");
+
+        // A regular file in its place is replaced as well.
+        let file = dir.path().join("file");
+        fs::write(&file, "data\n").unwrap();
+        replace_link(&file, Path::new("elsewhere")).unwrap();
+        assert_eq!(fs::read_link(&file).unwrap(), Path::new("elsewhere"));
     }
 
     #[test]

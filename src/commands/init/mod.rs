@@ -563,7 +563,14 @@ fn execute(ctx: &Context, args: &Args, plan: &Plan, rollback: &mut Rollback<'_>)
     env.save(layout)?;
     drop(ports_lock);
     env.regenerate(ctx, &[])?;
-    let up = env.stack(layout).command(["up", "-d"]).inherit_output();
+    let stack = env.stack(layout);
+    let up = stack.command(["up", "-d"]).inherit_output();
+    // A stack that half started holds the subvolume the rollback deletes.
+    let down = stack.command(["down", "-v", "--remove-orphans"]);
+    rollback.push(move |ctx| {
+        ctx.runner().run_unchecked(&down);
+        Ok(())
+    });
     ctx.runner().run_checked(&up)?;
     Ok(env)
 }

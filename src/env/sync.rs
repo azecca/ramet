@@ -12,6 +12,9 @@
 //! `.ramet.json` itself when git does not track it: the new env then runs the
 //! same way. A tracked file comes with the worktree and belongs to git; ramet
 //! never writes one.
+//!
+//! A symbolic link is copied as a link, pointing where the source's points,
+//! and never followed: `node_modules/.bin` holds nothing else.
 
 use std::collections::BTreeSet;
 use std::fs::{self, File, FileTimes, OpenOptions};
@@ -75,6 +78,48 @@ fn ancestors(path: &str) -> Vec<String> {
         .collect()
 }
 
+/// A synced path as it lands in the target env.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Synced {
+    /// A regular file, with its ports rewritten.
+    File(Content),
+    /// A symbolic link, and what it points to as it reads.
+    Link(PathBuf),
+}
+
+impl Synced {
+    /// What the path of the source worktree `from` becomes in the target env.
+    pub fn read(from: &Source, substitutions: &[(u16, u16)]) -> Result<Self> {
+        match from {
+            Source::File(path) => Content::read(path, substitutions).map(Self::File),
+            Source::Link(target) => Ok(Self::Link(target.clone())),
+        }
+    }
+
+    /// Whether `to` already holds exactly this.
+    pub fn is_at(&self, to: &Path) -> Result<bool> {
+        let current = match self {
+            Self::File(content) => fs::read(to).map(|bytes| bytes == content.bytes),
+            Self::Link(target) => fs::read_link(to).map(|current| current == *target),
+        };
+        match current {
+            Ok(same) => Ok(same),
+            // A link where a file is expected, or the other way around.
+            Err(err) if err.kind() == io::ErrorKind::InvalidInput => Ok(false),
+            Err(source) => Err(Error::io(to, source)),
+        }
+    }
+
+    /// How the copy is described: `copied`, `copied, 2 port(s) rewritten`,
+    /// `copied (link to …)`…
+    pub fn describe(&self, verb: &str) -> String {
+        match self {
+            Self::File(content) => content.describe(verb),
+            Self::Link(target) => format!("{verb} (link to {})", target.display()),
+        }
+    }
+}
+
 /// A synced file as it lands in the target env.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Content {
@@ -129,15 +174,32 @@ pub fn destination(worktree: &Path, relative: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// The synced file `relative` of the worktree `worktree`, when it is a regular
-/// file inside it, and `None` otherwise.
+/// A synced path of the source worktree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Source {
+    /// A regular file.
+    File(PathBuf),
+    /// A symbolic link, and what it points to as it reads.
+    Link(PathBuf),
+}
+
+/// The synced path `relative` of the worktree `worktree`, when it is a regular
+/// file or a symbolic link inside it, and `None` otherwise.
 ///
-/// A symbolic link is never followed: a `.env` pointing at `~/.ssh/id_ed25519`,
-/// which a container can create in the worktree it mounts, would otherwise
-/// copy that key into another worktree.
-pub fn source(worktree: &Path, relative: &str) -> Result<Option<PathBuf>> {
+/// A symbolic link is read, never followed: a `.env` pointing at
+/// `~/.ssh/id_ed25519`, which a container can create in the worktree it
+/// mounts, becomes the same link in the other worktree, and never a copy of
+/// the key.
+pub fn source(worktree: &Path, relative: &str) -> Result<Option<Source>> {
     let path = destination(worktree, relative)?;
-    Ok(is_regular_file(&path).then_some(path))
+    if is_regular_file(&path) {
+        return Ok(Some(Source::File(path)));
+    }
+    Ok(fs::symlink_metadata(&path)
+        .is_ok_and(|meta| meta.is_symlink())
+        .then(|| fs::read_link(&path).ok())
+        .flatten()
+        .map(Source::Link))
 }
 
 /// Whether `path` is a symbolic link, which ramet never writes through.
@@ -151,29 +213,48 @@ pub fn is_symlink(path: &Path) -> bool {
 /// sets `COMPOSE_FILE` or interpolated variables.
 ///
 /// A path already present in `target`, which `git worktree add` put there,
-/// is left alone. Returns the files copied and those left alone.
-pub fn copy_into_new(
-    source: &Path,
-    target: &Path,
-    files: &[String],
-) -> Result<(Vec<String>, Vec<String>)> {
-    let (mut copied, mut existing) = (Vec::new(), Vec::new());
+/// is left alone.
+pub fn copy_into_new(source: &Path, target: &Path, files: &[String]) -> Result<Copied> {
+    let mut copied = Copied::default();
     for relative in files {
         let to = destination(target, relative)?;
         let Some(from) = self::source(source, relative)? else {
             continue;
         };
         if is_present(&to) {
-            existing.push(relative.clone());
+            copied.existing.push(relative.clone());
             continue;
         }
         if let Some(parent) = to.parent() {
             fs::create_dir_all(parent).map_err(|source| Error::io(parent, source))?;
         }
-        copy_new(&from, &to).map_err(|source| Error::io(&to, source))?;
-        copied.push(relative.clone());
+        match from {
+            Source::File(from) => {
+                copy_new(&from, &to).map_err(|source| Error::io(&to, source))?;
+                copied.files.push(relative.clone());
+            }
+            Source::Link(points_to) => {
+                // Fails on anything already there, a link included.
+                std::os::unix::fs::symlink(&points_to, &to)
+                    .map_err(|source| Error::io(&to, source))?;
+                copied
+                    .links
+                    .push((relative.clone(), Synced::Link(points_to)));
+            }
+        }
     }
-    Ok((copied, existing))
+    Ok(copied)
+}
+
+/// What [`copy_into_new`] did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Copied {
+    /// The regular files copied, their ports still to rewrite.
+    pub files: Vec<String>,
+    /// The symbolic links copied.
+    pub links: Vec<(String, Synced)>,
+    /// The paths already present in the target, left alone.
+    pub existing: Vec<String>,
 }
 
 /// Rewrites the ports of the files [`copy_into_new`] copied into `target`.
@@ -182,7 +263,7 @@ pub fn rewrite_copied(
     target: &Path,
     files: &[String],
     substitutions: &[(u16, u16)],
-) -> Result<Vec<(String, Content)>> {
+) -> Result<Vec<(String, Synced)>> {
     files
         .iter()
         .map(|relative| {
@@ -191,7 +272,7 @@ pub fn rewrite_copied(
             if content.rewritten.is_some_and(|ports| ports > 0) {
                 crate::util::fs::replace_file(&path, &content.bytes, 0o600)?;
             }
-            Ok((relative.clone(), content))
+            Ok((relative.clone(), Synced::File(content)))
         })
         .collect()
 }

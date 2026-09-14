@@ -260,9 +260,8 @@ fn create(
     // Before compose resolves anything: `.ramet.json` says which compose
     // files to use, and a `.env` may set `COMPOSE_FILE` or variables the
     // compose files interpolate.
-    let (copied, existing) =
-        sync::copy_into_new(&source.worktree, &request.target_worktree, &request.synced)?;
-    for relative in &existing {
+    let copied = sync::copy_into_new(&source.worktree, &request.target_worktree, &request.synced)?;
+    for relative in &copied.existing {
         ui.warn(format!(
             "`{relative}` already exists in the new worktree: left as it is"
         ));
@@ -284,8 +283,9 @@ fn create(
     ui.ok(format!("ports {range}"));
 
     let substitutions = ports::substitutions(&source.ports.map, &env.ports.map);
-    for (relative, content) in sync::rewrite_copied(&env.worktree, &copied, &substitutions)? {
-        ui.ok(format!("`{relative}` {}", content.describe("copied")));
+    let rewritten = sync::rewrite_copied(&env.worktree, &copied.files, &substitutions)?;
+    for (relative, synced) in rewritten.iter().chain(&copied.links) {
+        ui.ok(format!("`{relative}` {}", synced.describe("copied")));
     }
 
     env.regenerate(ctx, &[])?;

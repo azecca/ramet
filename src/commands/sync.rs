@@ -10,17 +10,16 @@
 //! file git tracks is written.
 
 use std::fs;
-use std::io;
 use std::os::unix::fs::PermissionsExt;
 
 use crate::commands::Outcome;
 use crate::commands::support::given;
 use crate::context::Context;
-use crate::env::sync::{self, Content};
+use crate::env::sync::{self, Source, Synced};
 use crate::env::{Env, store};
 use crate::error::{Error, Result};
 use crate::ports;
-use crate::util::fs::replace_file;
+use crate::util::fs::{is_present, replace_file, replace_link};
 
 /// Arguments of `ramet sync`.
 #[derive(Clone, Debug, Default, clap::Args)]
@@ -37,7 +36,7 @@ pub struct Args {
 /// A file to write into the current env.
 struct Write {
     relative: String,
-    content: Content,
+    content: Synced,
 }
 
 /// Runs `ramet sync`.
@@ -67,20 +66,20 @@ pub fn run(ctx: &Context, args: &Args) -> Result<Outcome> {
             ));
             continue;
         }
-        if sync::is_symlink(&to) {
+        // A link replaces what is there; a file would be written through it.
+        if matches!(from, Source::File(_)) && sync::is_symlink(&to) {
             ui.warn(format!(
                 "`{relative}` is a symbolic link in this worktree: left alone"
             ));
             continue;
         }
-        let content = Content::read(&from, &substitutions)?;
-        match fs::read(&to) {
-            Ok(current) if current == content.bytes => unchanged += 1,
-            Ok(_) => differing.push(Write { relative, content }),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                missing.push(Write { relative, content });
-            }
-            Err(source) => return Err(Error::io(&to, source)),
+        let content = Synced::read(&from, &substitutions)?;
+        if !is_present(&to) {
+            missing.push(Write { relative, content });
+        } else if content.is_at(&to)? {
+            unchanged += 1;
+        } else {
+            differing.push(Write { relative, content });
         }
     }
 
@@ -175,17 +174,22 @@ fn source_env(ctx: &Context, target: &Env, from: Option<&str>) -> Result<Env> {
     Ok(source)
 }
 
-/// Writes one file into `target`, creating its directories; a new file takes
-/// the permissions of the source's, a replaced one keeps its own.
+/// Writes one file or link into `target`, creating its directories; a new
+/// file takes the permissions of the source's, a replaced one keeps its own.
 fn write_file(source: &Env, target: &Env, write: &Write) -> Result<()> {
     let to = sync::destination(&target.worktree, &write.relative)?;
     if let Some(parent) = to.parent() {
         fs::create_dir_all(parent).map_err(|err| Error::io(parent, err))?;
     }
-    let from = source.worktree.join(&write.relative);
-    let mode = fs::symlink_metadata(&from)
-        .map_err(|err| Error::io(&from, err))?
-        .permissions()
-        .mode();
-    replace_file(&to, &write.content.bytes, mode)
+    match &write.content {
+        Synced::File(content) => {
+            let from = source.worktree.join(&write.relative);
+            let mode = fs::symlink_metadata(&from)
+                .map_err(|err| Error::io(&from, err))?
+                .permissions()
+                .mode();
+            replace_file(&to, &content.bytes, mode)
+        }
+        Synced::Link(points_to) => replace_link(&to, points_to),
+    }
 }

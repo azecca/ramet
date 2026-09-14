@@ -291,18 +291,61 @@ fn a_branch_cannot_redirect_the_rewrite_of_its_env_file_through_a_link() {
 }
 
 #[test]
-fn a_link_in_the_source_worktree_is_never_followed() {
+fn a_link_in_the_source_worktree_is_copied_as_a_link_never_followed() {
     let fx = fixture();
     let secret = fx.base.join("id_ed25519");
     fs::write(&secret, "private key\n").unwrap();
     // A container mounting the worktree can leave such a link behind.
     std::os::unix::fs::symlink(&secret, fx.clone.join(".env.local")).unwrap();
     create(&fx, "feat-a", |_| {}).unwrap();
+    let copy = target(&fx, ".env.local");
     assert!(
-        !target(&fx, ".env.local").exists(),
-        "the key was not copied"
+        fs::symlink_metadata(&copy).unwrap().is_symlink(),
+        "the key was not copied into the worktree"
     );
-    assert!(target(&fx, ".env").exists(), "regular files still are");
+    assert_eq!(fs::read_link(&copy).unwrap(), secret);
+    assert!(target(&fx, ".env").is_file(), "regular files still are");
+}
+
+/// An ignored `node_modules` whose `.bin` holds only links, as npm lays it out.
+fn with_node_modules(fx: &Fixture) {
+    fs::write(fx.clone.join(".gitignore"), "node_modules/\n").unwrap();
+    git(&fx.clone, &["add", ".gitignore"]);
+    git(&fx.clone, &["commit", "-qm", "ignore"]);
+    write_file(
+        &fx.clone,
+        "node_modules/@nestjs/cli/bin/nest.js",
+        "#!/usr/bin/env node\n",
+    );
+    fs::create_dir_all(fx.clone.join("node_modules/.bin")).unwrap();
+    std::os::unix::fs::symlink(
+        "../@nestjs/cli/bin/nest.js",
+        fx.clone.join("node_modules/.bin/nest"),
+    )
+    .unwrap();
+    write_settings(&fx.clone, &json!({"sync": ["**/.env", "node_modules"]}));
+}
+
+/// Whether `path` is a link reading `text`, which resolves to a regular file.
+fn links_to(path: &std::path::Path, text: &str) -> bool {
+    fs::read_link(path).is_ok_and(|read| read == std::path::Path::new(text)) && path.is_file()
+}
+
+#[test]
+fn the_links_of_a_synced_directory_come_along() {
+    let fx = fixture();
+    with_node_modules(&fx);
+    create(&fx, "feat-a", |_| {}).unwrap();
+    let nest = target(&fx, "node_modules/.bin/nest");
+    assert!(
+        links_to(&nest, "../@nestjs/cli/bin/nest.js"),
+        "`nest: not found` in the new env"
+    );
+    let out = fx.stdout();
+    assert!(
+        out.contains("`node_modules/.bin/nest` copied (link to ../@nestjs/cli/bin/nest.js)"),
+        "{out}"
+    );
 }
 
 // ------------------------------------------------------------- `ramet sync`
@@ -341,8 +384,54 @@ fn sync_never_follows_a_link_in_the_source_worktree() {
     fs::create_dir_all(fx.clone.join("apps")).unwrap();
     std::os::unix::fs::symlink(&secret, fx.clone.join("apps/.env")).unwrap();
     run_sync(&fx, &feat, |_| {}).unwrap();
-    assert!(!target(&fx, "apps/.env").exists(), "the key was not copied");
-    assert!(target(&fx, ".env").exists(), "regular files still are");
+    let copy = target(&fx, "apps/.env");
+    assert!(
+        fs::symlink_metadata(&copy).unwrap().is_symlink(),
+        "the key was not copied into the worktree"
+    );
+    assert_eq!(fs::read_link(&copy).unwrap(), secret);
+    assert!(target(&fx, ".env").is_file(), "regular files still are");
+}
+
+#[test]
+fn sync_copies_the_missing_links_of_a_synced_directory() {
+    // The env was created before `node_modules` was added to the patterns.
+    let (fx, feat) = with_feat_a();
+    with_node_modules(&fx);
+    run_sync(&fx, &feat, |_| {}).unwrap();
+    assert!(links_to(
+        &target(&fx, "node_modules/.bin/nest"),
+        "../@nestjs/cli/bin/nest.js"
+    ));
+    assert!(target(&fx, "node_modules/@nestjs/cli/bin/nest.js").is_file());
+}
+
+#[test]
+fn sync_leaves_an_identical_link_and_replaces_one_that_differs() {
+    let (fx, feat) = with_feat_a();
+    with_node_modules(&fx);
+    run_sync(&fx, &feat, |_| {}).unwrap();
+
+    let nest = target(&fx, "node_modules/.bin/nest");
+    let decoy = fx.base.join("decoy.js");
+    fs::write(&decoy, "untouched\n").unwrap();
+    fs::remove_file(&nest).unwrap();
+    std::os::unix::fs::symlink(&decoy, &nest).unwrap();
+    run_sync(&fx, &feat, |args| args.yes = true).unwrap();
+    assert!(links_to(&nest, "../@nestjs/cli/bin/nest.js"));
+    assert_eq!(
+        fs::read_to_string(&decoy).unwrap(),
+        "untouched\n",
+        "the link replaced, not written through"
+    );
+
+    let out_before = fx.stdout().len();
+    run_sync(&fx, &feat, |_| {}).unwrap();
+    let out = fx.stdout();
+    assert!(
+        !out[out_before..].contains("node_modules/.bin/nest"),
+        "an identical link is left as it is: {out}"
+    );
 }
 
 #[test]
