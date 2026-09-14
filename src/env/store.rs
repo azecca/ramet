@@ -225,10 +225,7 @@ pub fn sanitize(name: &str) -> Result<String> {
 /// of subvolume names, and forbids a leading `-` that tools would read as an
 /// option.
 pub fn validate_name(kind: &'static str, name: &str) -> Result<()> {
-    let mut chars = name.chars();
-    let valid_start = chars.next().is_some_and(|c| c.is_ascii_alphanumeric());
-    let valid_rest = chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
-    (valid_start && valid_rest).ok_or_else(|| Error::InvalidName {
+    crate::util::name::is_plain(name).ok_or_else(|| Error::InvalidName {
         kind,
         name: name.to_owned(),
     })

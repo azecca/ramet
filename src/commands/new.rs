@@ -98,9 +98,6 @@ pub fn run(ctx: &Context, args: &Args) -> Result<Outcome> {
         Ok(env) => env,
         Err(err) => {
             rollback.unwind(ctx);
-            // The snapshot carries the source's env.json: never leave a
-            // half-created env that `ls` would list.
-            let _ = std::fs::remove_file(layout.env_file(&source.project, &args.name));
             return Err(err);
         }
     };
@@ -206,6 +203,18 @@ fn create(
     let ui = ctx.ui();
     let layout = ctx.layout();
     let args = request.args;
+    let branch = request.branch.clone();
+    let mut env = Env {
+        name: args.name.clone(),
+        project: source.project.clone(),
+        parent: Some(source.name.clone()),
+        worktree: request.target_worktree.clone(),
+        branch_at_creation: Some(branch.clone()),
+        created_at: Some(UtcDateTime::now().to_iso8601()),
+        ports: Ports::default(),
+        checkpoints: std::collections::BTreeMap::new(),
+        extra: serde_json::Map::new(),
+    };
 
     // A consistent snapshot: the source stack is frozen for its duration. A
     // checkpoint is already frozen in time.
@@ -218,6 +227,11 @@ fn create(
         .snapshot(&request.snapshot_source, &request.target_dir)?;
     let (undo_project, undo_snapshot) = (source.project.clone(), request.target_dir.clone());
     rollback.push(move |ctx| ctx.subvolumes().delete(&undo_project, &undo_snapshot));
+    // The snapshot holds the source's env.json, which names the source's
+    // worktree. Replaced at once, while an interruption is still held off: a
+    // run cut short later leaves an env pointing at its own worktree, never an
+    // env whose removal would take the source's worktree with it.
+    env.save(layout)?;
     ui.ok(format!("subvolume {}", request.target_dir.display()));
     if let Some(thaw) = freeze.release()?
         && !thaw.success()
@@ -230,7 +244,6 @@ fn create(
         ));
     }
 
-    let branch = request.branch.clone();
     if let Some(parent) = request.target_worktree.parent()
         && !parent.exists()
     {
@@ -263,18 +276,6 @@ fn create(
             "`{relative}` already exists in the new worktree: left as it is"
         ));
     }
-
-    let mut env = Env {
-        name: args.name.clone(),
-        project: source.project.clone(),
-        parent: Some(source.name.clone()),
-        worktree: request.target_worktree.clone(),
-        branch_at_creation: Some(branch),
-        created_at: Some(UtcDateTime::now().to_iso8601()),
-        ports: Ports::default(),
-        checkpoints: std::collections::BTreeMap::new(),
-        extra: serde_json::Map::new(),
-    };
 
     // The worktree must exist before the ports: only its compose files tell
     // how many ports are published.

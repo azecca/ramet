@@ -269,6 +269,42 @@ fn a_tracked_symlink_cannot_smuggle_a_file_out_of_the_worktree() {
     assert!(!outside.join("x").exists(), "nothing was written outside");
 }
 
+#[test]
+fn a_branch_cannot_redirect_the_rewrite_of_its_env_file_through_a_link() {
+    let fx = fixture();
+    let victim = fx.base.join("bashrc");
+    fs::write(&victim, "precious\n").unwrap();
+    // Where ramet used to write before renaming over `.env`.
+    for name in [".env.ramet-tmp", ".env.tmp"] {
+        std::os::unix::fs::symlink(&victim, fx.clone.join(name)).unwrap();
+    }
+    git(&fx.clone, &["add", "-f", ".env.ramet-tmp", ".env.tmp"]);
+    git(&fx.clone, &["commit", "-qm", "trap"]);
+
+    create(&fx, "feat-a", |_| {}).unwrap();
+    assert_eq!(fs::read_to_string(&victim).unwrap(), "precious\n");
+    let content = fs::read_to_string(target(&fx, ".env")).unwrap();
+    assert!(
+        content.contains(&format!("localhost:{}/app", new_port(&fx))),
+        "{content}"
+    );
+}
+
+#[test]
+fn a_link_in_the_source_worktree_is_never_followed() {
+    let fx = fixture();
+    let secret = fx.base.join("id_ed25519");
+    fs::write(&secret, "private key\n").unwrap();
+    // A container mounting the worktree can leave such a link behind.
+    std::os::unix::fs::symlink(&secret, fx.clone.join(".env.local")).unwrap();
+    create(&fx, "feat-a", |_| {}).unwrap();
+    assert!(
+        !target(&fx, ".env.local").exists(),
+        "the key was not copied"
+    );
+    assert!(target(&fx, ".env").exists(), "regular files still are");
+}
+
 // ------------------------------------------------------------- `ramet sync`
 
 /// `fixture()` plus the env feat-a, cloned from main, publishing web:80 on 30000.
@@ -295,6 +331,18 @@ fn sync_copies_a_missing_file_with_its_ports_rewritten() {
     let out = fx.stdout();
     assert!(out.contains("sync feat-a from \"main\""), "{out}");
     assert!(out.contains("`ramet compose up -d`"), "{out}");
+}
+
+#[test]
+fn sync_never_follows_a_link_in_the_source_worktree() {
+    let (fx, feat) = with_feat_a();
+    let secret = fx.base.join("id_ed25519");
+    fs::write(&secret, "private key\n").unwrap();
+    fs::create_dir_all(fx.clone.join("apps")).unwrap();
+    std::os::unix::fs::symlink(&secret, fx.clone.join("apps/.env")).unwrap();
+    run_sync(&fx, &feat, |_| {}).unwrap();
+    assert!(!target(&fx, "apps/.env").exists(), "the key was not copied");
+    assert!(target(&fx, ".env").exists(), "regular files still are");
 }
 
 #[test]

@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use crate::context::Context;
 use crate::env::Env;
 use crate::layout::{CHECKPOINT_SEPARATOR, env_file_name};
-use crate::util::fs::{is_present, read_json, sorted_entries};
+use crate::util::fs::{is_gone, read_json, sorted_entries};
 
 /// Everything under the data root, one entry per project directory.
 pub fn scan(ctx: &Context) -> Vec<Project> {
@@ -122,16 +122,18 @@ impl Subvolume {
         let fallback = || {
             let env = checkpoint_of.as_deref()?;
             let sibling = path.with_file_name(env).join(env_file_name());
-            Some((read_json::<Env>(&sibling), is_present(&sibling)))
+            Some((read_json::<Env>(&sibling), !is_gone(&sibling)))
         };
         let (metadata, recorded) = match metadata {
             Some(env) => (Some(env), true),
-            None if is_present(&file) => (None, true),
+            None if !is_gone(&file) => (None, true),
             None => fallback().unwrap_or((None, false)),
         };
         let worktree = metadata.as_ref().map(|env| env.worktree.clone());
         let orphan = match &worktree {
-            Some(worktree) if !is_present(worktree) => Some(Orphan::WorktreeGone),
+            // Only a worktree known to be gone: one on an unmounted disk
+            // or behind a permission it lacks may still hold work.
+            Some(worktree) if is_gone(worktree) => Some(Orphan::WorktreeGone),
             Some(_) => None,
             // An env.json that exists but cannot be read may be precious.
             None if recorded => None,

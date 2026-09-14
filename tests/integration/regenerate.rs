@@ -299,3 +299,29 @@ fn a_new_published_port_is_recorded() {
         "main keeps the project's port"
     );
 }
+
+// ------------------------------------------------------------------ volumes
+
+#[test]
+fn a_volume_named_to_leave_its_directory_is_refused() {
+    // Compose accepts `..` as a volume name. Stored as a directory of that
+    // name, it would bind the env's own directory, env.json included, into a
+    // container.
+    let fx = Fixture::new();
+    let mut env = env_with_settings(&fx, &json!({}));
+    fx.runner.set_config(json!({
+        "services": {"app": {"image": "alpine", "volumes": [
+            {"type": "volume", "source": "..", "target": "/data"}
+        ]}},
+        "volumes": {"..": {"name": "demo_.."}},
+    }));
+
+    let err = env.regenerate(&fx.ctx(), &[]).unwrap_err();
+
+    assert_matches!(err, Error::InvalidVolumeName { ref name } if name == "..");
+    assert!(err.hint().unwrap().contains("rename it"));
+    assert!(
+        !fx.layout().compose_file(PROJECT, "main").exists(),
+        "no configuration generated"
+    );
+}

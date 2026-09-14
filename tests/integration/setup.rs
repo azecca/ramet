@@ -24,6 +24,11 @@ fn bare_machine(fx: &Fixture) -> std::rc::Rc<std::cell::RefCell<crate::support::
     fx.machine()
 }
 
+fn mode(path: &std::path::Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path).unwrap().permissions().mode() & 0o777
+}
+
 fn ran(fx: &Fixture, program: &str) -> bool {
     fx.runner
         .argvs()
@@ -40,6 +45,8 @@ fn prepares_a_bare_machine_in_one_go() {
 
     let image = fx.layout().data_image().to_owned();
     assert_eq!(fs::metadata(&image).unwrap().len(), DATA_IMAGE_SIZE);
+    assert_eq!(mode(&image), 0o600, "every env's data is in the image");
+    assert_eq!(mode(image.parent().unwrap()), 0o700);
     let mkfs = fx
         .runner
         .argvs()
@@ -100,6 +107,43 @@ fn a_ready_machine_is_left_alone() {
     assert!(!ran(&fx, "mkfs.btrfs") && !ran(&fx, "mount"));
     assert!(!fx.layout().data_image().exists());
     assert!(fx.stdout().contains("ramet is ready"));
+}
+
+#[test]
+fn takes_away_what_other_users_could_read() {
+    use std::os::unix::fs::PermissionsExt;
+    // As ramet 0.1.0 left it: the image and the volume readable by everyone.
+    let fx = Fixture::new();
+    let machine = fx.machine();
+    machine.borrow_mut().fstab = Some(fx.image_fstab_line());
+    machine.borrow_mut().mounted = true;
+    let image = fx.layout().data_image().to_owned();
+    fs::write(&image, "data").unwrap();
+    let open = |path: &std::path::Path, bits| {
+        fs::set_permissions(path, fs::Permissions::from_mode(bits)).unwrap();
+    };
+    open(&image, 0o644);
+    open(image.parent().unwrap(), 0o755);
+    open(&fx.root, 0o755);
+
+    assert_eq!(setup(&fx), 0, "{}{}", fx.stdout(), fx.stderr());
+    assert_eq!(mode(&image), 0o600);
+    assert_eq!(mode(image.parent().unwrap()), 0o700);
+    assert_eq!(mode(&fx.root), 0o700);
+    assert!(fx.root_commands().is_empty(), "no privilege needed");
+    assert!(
+        fx.stdout().contains("now readable by you only"),
+        "{}",
+        fx.stdout()
+    );
+
+    let before = fx.stdout().len();
+    assert_eq!(setup(&fx), 0);
+    let again = &fx.stdout()[before..];
+    assert!(
+        !again.contains("readable by you only"),
+        "nothing left to change: {again}"
+    );
 }
 
 #[test]

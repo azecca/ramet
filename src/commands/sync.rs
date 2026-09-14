@@ -11,6 +11,7 @@
 
 use std::fs;
 use std::io;
+use std::os::unix::fs::PermissionsExt;
 
 use crate::commands::Outcome;
 use crate::commands::support::given;
@@ -19,6 +20,7 @@ use crate::env::sync::{self, Content};
 use crate::env::{Env, store};
 use crate::error::{Error, Result};
 use crate::ports;
+use crate::util::fs::replace_file;
 
 /// Arguments of `ramet sync`.
 #[derive(Clone, Debug, Default, clap::Args)]
@@ -55,11 +57,10 @@ pub fn run(ctx: &Context, args: &Args) -> Result<Outcome> {
     let substitutions = ports::substitutions(&source.ports.map, &target.ports.map);
     let (mut missing, mut differing, mut unchanged) = (Vec::new(), Vec::new(), 0);
     for relative in files {
-        let from = source.worktree.join(&relative);
         let to = sync::destination(&target.worktree, &relative)?;
-        if !from.is_file() {
+        let Some(from) = sync::source(&source.worktree, &relative)? else {
             continue;
-        }
+        };
         if tracked.contains(&relative) {
             ui.warn(format!(
                 "`{relative}` is tracked by git in this worktree: left alone"
@@ -178,17 +179,13 @@ fn source_env(ctx: &Context, target: &Env, from: Option<&str>) -> Result<Env> {
 /// the permissions of the source's, a replaced one keeps its own.
 fn write_file(source: &Env, target: &Env, write: &Write) -> Result<()> {
     let to = sync::destination(&target.worktree, &write.relative)?;
-    let created = !to.exists();
     if let Some(parent) = to.parent() {
         fs::create_dir_all(parent).map_err(|err| Error::io(parent, err))?;
     }
-    sync::write_replacing(&to, &write.content.bytes)?;
-    if created {
-        let from = source.worktree.join(&write.relative);
-        let permissions = fs::metadata(&from)
-            .map_err(|err| Error::io(&from, err))?
-            .permissions();
-        fs::set_permissions(&to, permissions).map_err(|err| Error::io(&to, err))?;
-    }
-    Ok(())
+    let from = source.worktree.join(&write.relative);
+    let mode = fs::symlink_metadata(&from)
+        .map_err(|err| Error::io(&from, err))?
+        .permissions()
+        .mode();
+    replace_file(&to, &write.content.bytes, mode)
 }

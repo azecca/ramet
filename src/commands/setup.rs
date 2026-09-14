@@ -70,6 +70,14 @@ pub fn run(ctx: &Context, args: &Args) -> Result<Outcome> {
         out.ui.blank();
         return Ok(Outcome::Exit(1));
     }
+    let restricted = ctx.data_volume().restrict_access();
+    if !restricted.is_empty() {
+        let paths: Vec<String> = restricted.iter().map(|path| out.path(path)).collect();
+        out.done(
+            "access",
+            format!("{}: now readable by you only", paths.join(", ")),
+        );
+    }
     report_volume(ctx, &out);
     out.conclude(complete);
     Ok(if complete {

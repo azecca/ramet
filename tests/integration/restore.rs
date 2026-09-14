@@ -35,6 +35,19 @@ fn refuses_an_unknown_checkpoint() {
 }
 
 #[test]
+fn a_label_that_leaves_the_env_is_refused_before_anything() {
+    // Joined into a path, this label reaches the checkpoint of another project.
+    let fx = with_checkpoint();
+    fx.checkpoint_dir("main", "c1");
+    let other = fx.root.join("other").join("main@c1");
+    std::fs::create_dir_all(&other).unwrap();
+    let err = run(&fx, "c1/../../other/main@c1", true, false).unwrap_err();
+    assert_matches!(err, Error::InvalidName { kind: "label", .. });
+    assert!(fx.btrfs.0.borrow().deleted.is_empty());
+    assert!(fx.btrfs.0.borrow().snapshots.is_empty());
+}
+
+#[test]
 fn deletes_the_subvolume_then_recreates_it_from_the_checkpoint() {
     let fx = with_checkpoint();
     assert_eq!(run(&fx, "c1", true, false).unwrap(), Outcome::Done);

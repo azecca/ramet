@@ -84,6 +84,21 @@ impl ComposeConfig {
         volumes
     }
 
+    /// Refuses a volume ramet would store whose name could leave its directory
+    /// (`..`), or whose docker name `docker volume inspect` would read as an
+    /// option (`--help`).
+    pub fn check_volume_names(&self) -> Result<()> {
+        for volume in self.declared_volumes().managed {
+            let docker = self.volume_name(&volume).map(str::to_owned);
+            for name in std::iter::once(volume).chain(docker) {
+                if !crate::util::name::is_plain(&name) {
+                    return Err(Error::InvalidVolumeName { name });
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The docker name compose gives a volume, when the configuration states it.
     pub fn volume_name(&self, volume: &str) -> Option<&str> {
         self.0
@@ -328,6 +343,41 @@ mod tests {
                 .get("name")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn a_volume_name_that_is_no_plain_name_is_refused() {
+        for (key, name) in [
+            ("..", "demo_x"),
+            (".", "demo_x"),
+            ("-rf", "demo_x"),
+            ("data", "--help"),
+        ] {
+            let config = ComposeConfig::from_map(
+                json!({"volumes": {key: {"name": name}}})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            );
+            assert!(
+                matches!(
+                    config.check_volume_names(),
+                    Err(Error::InvalidVolumeName { .. })
+                ),
+                "{key} {name}"
+            );
+        }
+        let external = ComposeConfig::from_map(
+            json!({"volumes": {"-shared": {"external": true, "name": "--x"}}})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        assert!(
+            external.check_volume_names().is_ok(),
+            "ramet leaves those alone"
+        );
+        assert!(example().check_volume_names().is_ok());
     }
 
     #[test]

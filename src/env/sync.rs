@@ -14,15 +14,16 @@
 //! never writes one.
 
 use std::collections::BTreeSet;
-use std::fs::{self, File, FileTimes, Permissions};
-use std::io;
+use std::fs::{self, File, FileTimes, OpenOptions};
+use std::io::{self, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::ports::rewrite_local_ports;
 use crate::settings::{FILE_NAME, Settings};
-use crate::util::fs::{is_present, relative_to};
+use crate::util::fs::{is_present, is_regular_file, read_regular_file, relative_to};
 use crate::util::glob::Pattern;
 
 /// The local files of `worktree` to sync into other envs, relative to it,
@@ -85,9 +86,10 @@ pub struct Content {
 }
 
 impl Content {
-    /// Reads `from`, rewriting its ports along `substitutions`.
+    /// Reads the regular file `from`, rewriting its ports along
+    /// `substitutions`. A symbolic link is refused: see [`source`].
     pub fn read(from: &Path, substitutions: &[(u16, u16)]) -> Result<Self> {
-        let bytes = fs::read(from).map_err(|source| Error::io(from, source))?;
+        let bytes = read_regular_file(from).map_err(|source| Error::io(from, source))?;
         Ok(match String::from_utf8(bytes) {
             Ok(text) => {
                 let rewrite = rewrite_local_ports(&text, substitutions);
@@ -127,6 +129,17 @@ pub fn destination(worktree: &Path, relative: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// The synced file `relative` of the worktree `worktree`, when it is a regular
+/// file inside it, and `None` otherwise.
+///
+/// A symbolic link is never followed: a `.env` pointing at `~/.ssh/id_ed25519`,
+/// which a container can create in the worktree it mounts, would otherwise
+/// copy that key into another worktree.
+pub fn source(worktree: &Path, relative: &str) -> Result<Option<PathBuf>> {
+    let path = destination(worktree, relative)?;
+    Ok(is_regular_file(&path).then_some(path))
+}
+
 /// Whether `path` is a symbolic link, which ramet never writes through.
 pub fn is_symlink(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
@@ -146,11 +159,10 @@ pub fn copy_into_new(
 ) -> Result<(Vec<String>, Vec<String>)> {
     let (mut copied, mut existing) = (Vec::new(), Vec::new());
     for relative in files {
-        let from = source.join(relative);
         let to = destination(target, relative)?;
-        if !from.is_file() {
+        let Some(from) = self::source(source, relative)? else {
             continue;
-        }
+        };
         if is_present(&to) {
             existing.push(relative.clone());
             continue;
@@ -158,8 +170,7 @@ pub fn copy_into_new(
         if let Some(parent) = to.parent() {
             fs::create_dir_all(parent).map_err(|source| Error::io(parent, source))?;
         }
-        fs::copy(&from, &to).map_err(|source| Error::io(&to, source))?;
-        copy_times(&from, &to).map_err(|source| Error::io(&to, source))?;
+        copy_new(&from, &to).map_err(|source| Error::io(&to, source))?;
         copied.push(relative.clone());
     }
     Ok((copied, existing))
@@ -178,39 +189,33 @@ pub fn rewrite_copied(
             let path = target.join(relative);
             let content = Content::read(&path, substitutions)?;
             if content.rewritten.is_some_and(|ports| ports > 0) {
-                write_replacing(&path, &content.bytes)?;
+                crate::util::fs::replace_file(&path, &content.bytes, 0o600)?;
             }
             Ok((relative.clone(), content))
         })
         .collect()
 }
 
-/// Writes `bytes` to `path` atomically, keeping the permissions of the file
-/// it replaces, if any.
-pub fn write_replacing(path: &Path, bytes: &[u8]) -> Result<()> {
-    let permissions: Option<Permissions> = fs::metadata(path).ok().map(|meta| meta.permissions());
-    let mut temporary = path.as_os_str().to_owned();
-    temporary.push(".ramet-tmp");
-    let temporary = PathBuf::from(temporary);
-    let written = fs::write(&temporary, bytes)
-        .and_then(|()| match permissions {
-            Some(permissions) => fs::set_permissions(&temporary, permissions),
-            None => Ok(()),
-        })
-        .and_then(|()| fs::rename(&temporary, path));
-    written.map_err(|source| {
-        let _ = fs::remove_file(&temporary);
-        Error::io(path, source)
-    })
-}
-
-/// Gives `to` the access and modification times of `from`, as `cp -p` does.
-fn copy_times(from: &Path, to: &Path) -> io::Result<()> {
-    let meta = fs::metadata(from)?;
-    let times = FileTimes::new()
-        .set_accessed(meta.accessed()?)
-        .set_modified(meta.modified()?);
-    File::options().write(true).open(to)?.set_times(times)
+/// Copies the regular file `from` to `to`, which must not exist yet, with its
+/// permissions and times, as `cp -p` does.
+///
+/// `to` is created with `O_EXCL`, which never follows a symbolic link: one
+/// swapped in after the caller looked makes the copy fail.
+fn copy_new(from: &Path, to: &Path) -> io::Result<()> {
+    let bytes = read_regular_file(from)?;
+    let meta = fs::symlink_metadata(from)?;
+    let mut file: File = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(to)?;
+    file.set_permissions(meta.permissions())?;
+    file.write_all(&bytes)?;
+    file.set_times(
+        FileTimes::new()
+            .set_accessed(meta.accessed()?)
+            .set_modified(meta.modified()?),
+    )
 }
 
 #[cfg(test)]
@@ -239,26 +244,6 @@ mod tests {
         assert_eq!(
             content.describe("copied"),
             "copied (binary, ports not rewritten)"
-        );
-    }
-
-    #[test]
-    fn a_replacement_keeps_the_permissions_of_the_file_it_replaces() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(".env");
-        fs::write(&path, "old\n").unwrap();
-        fs::set_permissions(&path, Permissions::from_mode(0o600)).unwrap();
-        write_replacing(&path, b"new\n").unwrap();
-        assert_eq!(fs::read(&path).unwrap(), b"new\n");
-        assert_eq!(
-            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        assert_eq!(
-            fs::read_dir(dir.path()).unwrap().count(),
-            1,
-            "no temporary file left"
         );
     }
 }

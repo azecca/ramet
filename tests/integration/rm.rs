@@ -139,3 +139,51 @@ fn every_path_comes_from_where_the_env_lies() {
         .unwrap();
     assert_eq!(down.project.as_deref(), Some("demo-feat-a"));
 }
+
+#[test]
+fn never_takes_the_worktree_of_another_env() {
+    // What a `ramet new feat-b` cut short used to leave: feat-b's env.json
+    // still naming the worktree of feat-a, the env it was cloned from.
+    let fx = Fixture::with_main_env();
+    let feat_a = fx.secondary_env("feat-a");
+    std::fs::write(feat_a.worktree.join("wip.txt"), "uncommitted work").unwrap();
+    fx.save_env(fx.env("feat-b", |env| {
+        env.parent = Some("feat-a".into());
+        env.worktree.clone_from(&feat_a.worktree);
+    }));
+
+    assert_eq!(remove(&fx, "feat-b", false, true).unwrap(), Outcome::Done);
+
+    assert!(
+        feat_a.worktree.join("wip.txt").exists(),
+        "feat-a's work is gone"
+    );
+    assert_eq!(fx.btrfs.0.borrow().deleted, ["feat-b"]);
+    assert!(
+        fx.stdout()
+            .contains("(kept: it is the worktree of env \"feat-a\")"),
+        "{}",
+        fx.stdout()
+    );
+}
+
+#[test]
+fn never_removes_a_directory_git_does_not_list_as_a_worktree() {
+    let fx = Fixture::with_main_env();
+    let elsewhere = fx.base.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("notes.txt"), "mine").unwrap();
+    fx.save_env(fx.env("feat-b", |env| {
+        env.parent = Some("main".into());
+        env.worktree.clone_from(&elsewhere);
+    }));
+
+    remove(&fx, "feat-b", false, true).unwrap();
+
+    assert!(elsewhere.join("notes.txt").exists());
+    assert!(
+        fx.stdout().contains("kept: git does not list it"),
+        "{}",
+        fx.stdout()
+    );
+}

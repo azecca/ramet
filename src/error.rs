@@ -277,6 +277,17 @@ pub enum Error {
     #[error("unreadable output from `docker compose config`: {0}")]
     ComposeConfigUnreadable(#[source] serde_json::Error),
 
+    /// A volume ramet would store has a name that is no plain directory name,
+    /// or a docker name a command would read as an option.
+    #[error(
+        "the compose configuration names a volume {name:?}, which ramet cannot store \
+         (letters, digits, '.', '_' and '-' only, not starting with '.', '_' or '-')"
+    )]
+    InvalidVolumeName {
+        /// The name, as the configuration gives it.
+        name: String,
+    },
+
     // ----------------------------------------------------------------- names
     /// A name reduces to nothing once sanitized.
     #[error("unusable project name: {name:?}")]
@@ -654,6 +665,9 @@ impl Error {
                 "subvolumes and env.json files would belong to root, and {user} could no longer \
                  write to them. Rerun the command without sudo."
             ),
+            Self::InvalidVolumeName { .. } => "each volume gets a directory of its name in the \
+                                                env's data: rename it in the compose file"
+                .to_owned(),
             Self::NoEnvironment { .. } | Self::NoProject { .. } => {
                 "run `ramet init` in the project's main clone".to_owned()
             }

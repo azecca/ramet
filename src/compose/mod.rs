@@ -84,7 +84,9 @@ impl<'a> Compose<'a> {
                 detail,
             });
         }
-        ComposeConfig::from_json(&output.stdout)
+        let config = ComposeConfig::from_json(&output.stdout)?;
+        config.check_volume_names()?;
+        Ok(config)
     }
 
     /// Containers of the compose project `name`, running or not.

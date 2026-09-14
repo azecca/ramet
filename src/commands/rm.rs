@@ -2,9 +2,10 @@
 
 use crate::commands::Outcome;
 use crate::context::Context;
-use crate::env::store;
+use crate::env::{Env, store};
 use crate::error::{Error, Result};
 use crate::process::RunnerExt;
+use crate::util::fs::resolve;
 
 /// Arguments of `ramet rm`.
 #[derive(Clone, Debug, Default, clap::Args)]
@@ -46,9 +47,16 @@ pub fn run(ctx: &Context, args: &Args) -> Result<Outcome> {
 
     let layout = ctx.layout();
     let checkpoints = store::checkpoints_on_disk(ctx, &here.project, &target.name);
+    let kept = worktree_kept(ctx, &target, &envs, &main_clone);
     let ui = ctx.ui();
     ui.out(format!("removing env {}", ui.style().bold(&target.name)));
-    ui.out(format!("  worktree     {}", target.worktree.display()));
+    match &kept {
+        Some(reason) => ui.out(format!(
+            "  worktree     {} (kept: {reason})",
+            target.worktree.display()
+        )),
+        None => ui.out(format!("  worktree     {}", target.worktree.display())),
+    }
     ui.out(format!("  subvolume    {}", target.dir(layout).display()));
     if !checkpoints.is_empty() {
         let names: Vec<String> = checkpoints
@@ -85,7 +93,7 @@ pub fn run(ctx: &Context, args: &Args) -> Result<Outcome> {
     }
 
     let git = ctx.git();
-    if target.worktree.exists() {
+    if kept.is_none() && target.worktree.exists() {
         git.remove_worktree(&main_clone, &target.worktree)?;
         ui.ok("worktree removed");
     }
@@ -109,4 +117,36 @@ pub fn run(ctx: &Context, args: &Args) -> Result<Outcome> {
             .green(format!("env \"{}\" removed.", target.name)),
     );
     Ok(Outcome::Done)
+}
+
+/// Why the worktree `target` records must survive its removal, if it must.
+///
+/// `git worktree remove --force` discards uncommitted work, and the path comes
+/// from `env.json`: a `ramet new` cut short before it wrote its own, or a file
+/// edited by hand, can name the worktree of another env. Only a worktree no
+/// other env records, that git lists as a linked worktree of this repository,
+/// goes.
+fn worktree_kept(
+    ctx: &Context,
+    target: &Env,
+    others: &std::collections::BTreeMap<String, Env>,
+    main_clone: &std::path::Path,
+) -> Option<String> {
+    let worktree = resolve(&target.worktree);
+    if !target.worktree.exists() {
+        return None;
+    }
+    if let Some(owner) = others
+        .values()
+        .find(|other| resolve(&other.worktree) == worktree)
+    {
+        return Some(format!("it is the worktree of env \"{}\"", owner.name));
+    }
+    let linked = ctx
+        .git()
+        .worktrees(main_clone)
+        .iter()
+        .skip(1)
+        .any(|tree| resolve(&tree.path) == worktree);
+    (!linked).then(|| "git does not list it as a worktree of this repository".to_owned())
 }

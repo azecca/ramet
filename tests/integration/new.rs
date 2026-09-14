@@ -211,6 +211,23 @@ fn an_invalid_ramet_json_is_refused_before_anything_is_created() {
 }
 
 #[test]
+fn a_clone_cut_short_names_its_own_worktree_never_the_source_s() {
+    // The snapshot copies main's env.json, naming main's worktree. A run that
+    // stops before cleaning up (a failure here, Ctrl-C in real life) must not
+    // leave an env whose removal would take main's worktree.
+    let fx = Fixture::with_main_env();
+    fx.btrfs.0.borrow_mut().fail_deletes = true;
+    // `main` is checked out in the main clone: `git worktree add` fails.
+    let err = create(&fx, "feat-a", |args| args.branch = Some("main".into()));
+    assert!(err.is_err());
+
+    let leftover = fx.load("feat-a");
+    assert_eq!(leftover.worktree, fx.base.join("app.wt/feat-a"));
+    assert_ne!(leftover.worktree, fx.clone);
+    assert_eq!(leftover.parent.as_deref(), Some("main"));
+}
+
+#[test]
 fn checks_out_the_requested_branch() {
     let fx = Fixture::with_main_env();
     create(&fx, "feat-a", |args| args.branch = Some("other".into())).unwrap();

@@ -5,8 +5,8 @@
 //! first ramet command mounts it with a plain `mount`, without privilege. Root
 //! only intervenes once, when `ramet setup` prepares the machine.
 
-use std::fs::{self, OpenOptions};
-use std::os::unix::fs::MetadataExt;
+use std::fs::{self, OpenOptions, Permissions};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
@@ -138,6 +138,36 @@ impl<'a> DataVolume<'a> {
         self.root().is_dir() && self.filesystem() == "btrfs" && is_writable(self.root())
     }
 
+    /// Takes away every access other users have to the data: to the image,
+    /// the directory holding it, and the root of the mounted volume. Returns
+    /// the paths changed.
+    ///
+    /// Versions up to 0.1.0 created them readable by everyone, so that any
+    /// local user could copy the image, or browse the volume once mounted, and
+    /// `user` in fstab lets any of them mount it. The owner's own permissions
+    /// are kept; a symbolic link, or a path this user cannot change, is left
+    /// as it is.
+    pub fn restrict_access(&self) -> Vec<PathBuf> {
+        let image = self.layout.data_image();
+        let mut paths = vec![image.to_owned()];
+        paths.extend(image.parent().map(Path::to_path_buf));
+        if self.is_usable() {
+            paths.push(self.root().to_owned());
+        }
+        paths
+            .into_iter()
+            .filter(|path| {
+                let Ok(meta) = fs::symlink_metadata(path) else {
+                    return false;
+                };
+                let mode = meta.permissions().mode();
+                !meta.file_type().is_symlink()
+                    && mode & 0o077 != 0
+                    && fs::set_permissions(path, Permissions::from_mode(mode & !0o077)).is_ok()
+            })
+            .collect()
+    }
+
     /// Bytes left in the data volume.
     pub fn free_bytes(&self) -> Option<u64> {
         self.host.free_bytes(self.root()).ok()
@@ -197,13 +227,20 @@ impl<'a> DataVolume<'a> {
     /// filesystem is built from an empty directory of the user's (`--rootdir`),
     /// so that its root belongs to them from the start; without that it would
     /// belong to root, and handing it over would take a privileged mount.
+    ///
+    /// The image, its directory and that root are for the user alone: the
+    /// volume holds every env's data, databases included. See
+    /// [`restrict_access`](Self::restrict_access).
     pub fn create_image(&self, size: u64) -> Result<()> {
         let image = self.layout.data_image();
         let dir = image.parent().unwrap_or(Path::new("."));
         fs::create_dir_all(dir).map_err(|source| Error::io(dir, source))?;
+        fs::set_permissions(dir, Permissions::from_mode(0o700))
+            .map_err(|source| Error::io(dir, source))?;
         let file = OpenOptions::new()
             .write(true)
             .create_new(true)
+            .mode(0o600)
             .open(image)
             .map_err(|source| Error::io(image, source))?;
         let formatted = file
@@ -223,7 +260,10 @@ impl<'a> DataVolume<'a> {
         // empty one is ever reused.
         let empty = dir.join(".ramet-empty-root");
         let _ = fs::remove_dir(&empty);
-        fs::create_dir(&empty).map_err(|source| Error::io(&empty, source))?;
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&empty)
+            .map_err(|source| Error::io(&empty, source))?;
         let mkfs = self
             .host
             .find_program("mkfs.btrfs")

@@ -169,6 +169,30 @@ fn leaves_alone_what_might_still_be_wanted() {
 }
 
 #[test]
+fn a_worktree_it_cannot_see_is_not_a_worktree_gone() {
+    use std::os::unix::fs::PermissionsExt;
+    // An unmounted network share, a locked encrypted home, a sandbox that
+    // sees the data root but not the repositories: all answer "permission
+    // denied" or an I/O error, never "not found".
+    let fx = Fixture::with_main_env();
+    let hidden = fx.base.join("locked");
+    let worktree = hidden.join("feat-a");
+    fs::create_dir_all(&worktree).unwrap();
+    record(&fx, PROJECT, "feat-a", &worktree);
+    fs::set_permissions(&hidden, fs::Permissions::from_mode(0o000)).unwrap();
+    // Root reads through any permission: nothing to prove then.
+    let denied = fs::read_dir(&hidden).is_err();
+
+    let outcome = run(&fx, true);
+    fs::set_permissions(&hidden, fs::Permissions::from_mode(0o755)).unwrap();
+    if denied {
+        assert_eq!(outcome.unwrap(), Outcome::Done);
+        assert!(deleted(&fx).is_empty(), "{:?}", deleted(&fx));
+        assert!(fx.stdout().contains("nothing to prune"), "{}", fx.stdout());
+    }
+}
+
+#[test]
 fn declining_deletes_nothing() {
     let fx = Fixture::with_main_env();
     orphaned_env(&fx, "feat-old");

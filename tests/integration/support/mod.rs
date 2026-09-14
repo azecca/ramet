@@ -239,6 +239,8 @@ pub(crate) struct BtrfsLog {
     pub(crate) ids: BTreeMap<String, u64>,
     /// Makes every snapshot fail.
     pub(crate) fail_snapshots: bool,
+    /// Makes every deletion fail, as an interruption would leave it.
+    pub(crate) fail_deletes: bool,
 }
 
 /// A faithful btrfs double: a snapshot really copies, a deletion really
@@ -288,6 +290,12 @@ impl Btrfs for FakeBtrfs {
     }
 
     fn delete_subvolume(&self, path: &Path) -> Result<()> {
+        if self.0.borrow().fail_deletes {
+            return Err(ramet::error::Error::CommandFailed {
+                command: "btrfs subvolume delete".to_owned(),
+                detail: "simulated failure".to_owned(),
+            });
+        }
         self.0.borrow_mut().deleted.push(name_of(path));
         let _ = fs::remove_dir_all(path);
         Ok(())

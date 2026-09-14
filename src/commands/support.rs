@@ -162,11 +162,16 @@ pub(crate) fn context_line(ctx: &Context, env: &Env) -> String {
 }
 
 /// The checkpoint subvolume of `env` labelled `label`, which must exist.
+///
+/// The label is checked as `checkpoint` checks it when creating one: joined
+/// into a path, `c1/../../other/main@c1` would reach a subvolume of another
+/// project.
 pub(crate) fn existing_checkpoint(
     ctx: &Context,
     env: &Env,
     label: &str,
 ) -> Result<std::path::PathBuf> {
+    crate::env::store::validate_name("label", label)?;
     let path = ctx.layout().checkpoint_dir(&env.project, &env.name, label);
     if ctx.subvolumes().is_subvolume(&path) {
         Ok(path)

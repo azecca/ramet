@@ -1,8 +1,10 @@
 //! Filesystem helpers.
 
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::fs::{self, File, OpenOptions, Permissions};
+use std::io::{self, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -100,17 +102,91 @@ pub fn to_json_pretty<T: Serialize + ?Sized>(value: &T) -> String {
 }
 
 /// Writes `contents` to `path` atomically: readers see the old file or the
-/// new one, never a truncated one.
+/// new one, never a truncated one. See [`replace_file`].
 pub fn write_atomic(path: &Path, contents: &str) -> Result<()> {
-    let mut temporary = path.as_os_str().to_owned();
-    temporary.push(".tmp");
-    let temporary = PathBuf::from(temporary);
-    fs::write(&temporary, contents)
+    replace_file(path, contents.as_bytes(), 0o644)
+}
+
+/// Writes `bytes` to `path` atomically, keeping the permissions of the regular
+/// file it replaces; a new file gets `mode`.
+///
+/// The bytes go to a temporary file beside `path`, which is then renamed over
+/// it. That file is created with `O_EXCL` under a name of this process's: a
+/// symbolic link planted where it would go, by a checked-out branch or by a
+/// container writing into the directory, makes the creation fail instead of
+/// redirecting the write to the link's target. The rename replaces `path`
+/// itself, never what a link there points to.
+pub fn replace_file(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
+    let mode = fs::symlink_metadata(path)
+        .ok()
+        .filter(fs::Metadata::is_file)
+        .map_or(mode, |meta| meta.permissions().mode() & 0o7777);
+    let (temporary, mut file) = create_temporary(path).map_err(|source| Error::io(path, source))?;
+    file.set_permissions(Permissions::from_mode(mode))
+        .and_then(|()| file.write_all(bytes))
+        .and_then(|()| file.sync_all())
         .and_then(|()| fs::rename(&temporary, path))
         .map_err(|source| {
             let _ = fs::remove_file(&temporary);
             Error::io(path, source)
         })
+}
+
+/// Creates a file beside `path` that no other writer holds, for
+/// [`replace_file`]: `.<name>.ramet-<pid>-<n>`, trying the next `n` while the
+/// name is taken.
+fn create_temporary(path: &Path) -> io::Result<(PathBuf, File)> {
+    /// Names tried before giving up: taken names mean a crowded directory or
+    /// someone guessing them, and failing is the safe answer to both.
+    const ATTEMPTS: u32 = 16;
+    let mut attempt = 0;
+    loop {
+        let temporary = temporary_name(path, NEXT_TEMPORARY.fetch_add(1, Ordering::Relaxed));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temporary)
+        {
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists && attempt + 1 < ATTEMPTS => {
+                attempt += 1;
+            }
+            opened => return opened.map(|file| (temporary, file)),
+        }
+    }
+}
+
+/// Numbers the temporary files of this process.
+static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
+
+/// The `n`-th temporary name beside `path`.
+fn temporary_name(path: &Path, n: u64) -> PathBuf {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    path.with_file_name(format!(".{name}.ramet-{}-{n}", std::process::id()))
+}
+
+/// Whether `path` is a regular file, without following a symbolic link.
+pub fn is_regular_file(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file())
+}
+
+/// Reads the regular file `path`, refusing a symbolic link in its place:
+/// checked when opening, so a link swapped in after [`is_regular_file`] is
+/// refused too.
+pub fn read_regular_file(path: &Path) -> io::Result<Vec<u8>> {
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits().cast_signed())
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
+    let mut bytes = Vec::new();
+    io::Read::read_to_end(&mut file, &mut bytes)?;
+    Ok(bytes)
 }
 
 /// Writes `value` as JSON to `path` atomically.
@@ -158,6 +234,15 @@ pub fn exists(path: &Path) -> bool {
 /// Whether `path` exists or is a dangling symbolic link.
 pub fn is_present(path: &Path) -> bool {
     exists(path) || fs::symlink_metadata(path).is_ok()
+}
+
+/// Whether `path` is known to be gone: looking it up answers "not found".
+///
+/// Any other failure (permission denied, a stale network mount, an I/O error)
+/// tells nothing about the path, which may well be there: it does not count as
+/// gone. Deciding what to delete relies on that difference.
+pub fn is_gone(path: &Path) -> bool {
+    matches!(fs::symlink_metadata(path), Err(err) if err.kind() == io::ErrorKind::NotFound)
 }
 
 #[cfg(test)]
@@ -256,6 +341,83 @@ mod tests {
             read_json::<serde_json::Value>(&path),
             Some(serde_json::json!({"a": 2, "b": 1}))
         );
+    }
+
+    #[test]
+    fn a_replacement_never_writes_through_a_planted_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        fs::write(&victim, "precious\n").unwrap();
+        let target = dir.path().join(".env");
+        // The next names the temporary file will try. Tests running alongside
+        // may take some first, which only leaves fewer links in the way.
+        let next = NEXT_TEMPORARY.load(Ordering::Relaxed);
+        for n in next..next + 4 {
+            symlink(&victim, temporary_name(&target, n)).unwrap();
+        }
+        replace_file(&target, b"new\n", 0o600).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"new\n");
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "precious\n");
+    }
+
+    #[test]
+    fn a_replacement_keeps_the_permissions_of_the_file_it_replaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        fs::write(&path, "old\n").unwrap();
+        fs::set_permissions(&path, Permissions::from_mode(0o640)).unwrap();
+        replace_file(&path, b"new\n", 0o600).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new\n");
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+
+        let fresh = dir.path().join("fresh");
+        replace_file(&fresh, b"x", 0o600).unwrap();
+        assert_eq!(
+            fs::metadata(&fresh).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            sorted_entries(dir.path()).len(),
+            2,
+            "no temporary file left"
+        );
+    }
+
+    #[test]
+    fn a_link_to_a_file_is_not_read_as_a_regular_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = dir.path().join("id_ed25519");
+        fs::write(&secret, "key").unwrap();
+        let link = dir.path().join(".env");
+        symlink(&secret, &link).unwrap();
+        assert!(is_regular_file(&secret));
+        assert!(!is_regular_file(&link));
+        assert_eq!(read_regular_file(&secret).unwrap(), b"key");
+        assert!(read_regular_file(&link).is_err());
+        assert!(read_regular_file(dir.path()).is_err());
+    }
+
+    #[test]
+    fn only_a_path_not_found_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let locked = dir.path().join("locked");
+        fs::create_dir_all(locked.join("worktree")).unwrap();
+        assert!(!is_gone(&locked.join("worktree")));
+        assert!(is_gone(&dir.path().join("deleted/worktree")));
+        symlink(dir.path().join("nowhere"), dir.path().join("dangling")).unwrap();
+        assert!(!is_gone(&dir.path().join("dangling")));
+
+        fs::set_permissions(&locked, Permissions::from_mode(0o000)).unwrap();
+        // Root reads through any permission: the case cannot arise then.
+        let denied = fs::read_dir(&locked).is_err();
+        let gone = is_gone(&locked.join("worktree"));
+        fs::set_permissions(&locked, Permissions::from_mode(0o755)).unwrap();
+        if denied {
+            assert!(!gone, "an unreadable worktree is not a deleted one");
+        }
     }
 
     #[test]
