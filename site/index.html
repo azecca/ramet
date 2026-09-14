@@ -283,6 +283,38 @@ ramet/install.sh</code></pre>
     </p>
   </section>
 
+  <section class="wrap section" id="addresses">
+    <h2>Addresses that follow the env</h2>
+    <p class="lead">
+      Each env runs on ports of its own. An address a browser opens, an OAuth
+      callback or a CORS origin must carry that port. Name the port once, and write
+      its variable where the address is: ramet never rewrites your files.
+    </p>
+    <div class="code">
+      <div class="code-bar">
+        <span>Name the port, then use it</span>
+        <button class="copy" type="button" data-copy="cmd-ports" hidden>Copy</button>
+      </div>
+      <pre tabindex="0"><code id="cmd-ports"><span class="comment"># .ramet.json</span>
+{ "ports": { "web": "proxy:80" } }
+
+<span class="comment"># compose.override.yml</span>
+services:
+  app:
+    environment:
+      APP_URL: http://app.test${RAMET_PORT_WEB:+:$RAMET_PORT_WEB}</code></pre>
+    </div>
+    <dl class="cmds">
+      <div><dt><code>main</code></dt><dd><code>http://app.test</code>, the project's usual port: the variable is unset, as without ramet.</dd></div>
+      <div><dt><code>feat-price</code></dt><dd><code>http://app.test:21000</code>, the port of this env.</dd></div>
+    </dl>
+    <p class="aside">
+      <strong>Behind Traefik?</strong> It sees the containers of every env. The
+      <a href="https://github.com/azecca/ramet#addresses-of-an-env">README</a> shows
+      the line that keeps it to its own.
+    </p>
+  </section>
+
   <section class="wrap section" id="agents">
     <h2>With AI agents</h2>
     <p class="lead">

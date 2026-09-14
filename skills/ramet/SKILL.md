@@ -41,7 +41,11 @@ compose's exit code.
 
 Each env has host ports of its own: do not assume the project's usual ones.
 Read them from `published` in `ramet ls --json`. The env's `.env` files were
-copied with their `localhost:<port>` rewritten to the env's ports.
+copied with their `localhost:<port>` rewritten to the env's ports. An address
+on another host (`http://app.test`) is not rewritten: when it must carry the
+env's port, the project names that port in `.ramet.json` (`"ports": {"web":
+"proxy:80"}`) and writes `${RAMET_PORT_WEB}` in its compose files; `variables`
+in `published` lists them. Never edit these files to hard-code an env's port.
 
 ## Parallel work
 

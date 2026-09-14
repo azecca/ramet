@@ -7,8 +7,9 @@ use serde::Serialize;
 use crate::commands::Outcome;
 use crate::compose::StackState;
 use crate::context::Context;
-use crate::env::{Env, Ports, store};
+use crate::env::{Env, store};
 use crate::error::{Error, Result};
+use crate::settings::Settings;
 use crate::util::fs::to_json_pretty;
 
 /// Arguments of `ramet ls`.
@@ -28,6 +29,10 @@ pub struct Published {
     pub container_port: u16,
     /// Port on the host.
     pub host_port: u16,
+    /// The variables of `.ramet.json` holding it; none where the env keeps
+    /// the project's ports.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub variables: Vec<String>,
 }
 
 /// What `ls` reports about one env.
@@ -145,8 +150,13 @@ pub fn run(ctx: &Context, args: &Args) -> Result<Outcome> {
             ui.out(format!("     compose  {}", item.compose_files.join(", ")));
         }
         for port in &item.published {
+            let variables = if port.variables.is_empty() {
+                String::new()
+            } else {
+                format!("  {}", style.dim(port.variables.join(" ")))
+            };
             ui.out(format!(
-                "     localhost:{} → {}:{}",
+                "     localhost:{} → {}:{}{variables}",
                 port.host_port, port.service, port.container_port
             ));
         }
@@ -171,7 +181,9 @@ pub fn run(ctx: &Context, args: &Args) -> Result<Outcome> {
 pub fn summarize(ctx: &Context, env: &Env) -> EnvSummary {
     let worktree_exists = env.worktree.is_dir();
     // An unreadable `.ramet.json` is `doctor`'s to report: `ls` lists anyway.
-    let compose = env.settings().unwrap_or_default().compose;
+    let settings = env.settings().unwrap_or_default();
+    let published = published(env, &settings);
+    let compose = settings.compose;
     EnvSummary {
         name: env.name.clone(),
         parent: env.parent.clone(),
@@ -190,14 +202,17 @@ pub fn summarize(ctx: &Context, env: &Env) -> EnvSummary {
             range: env.ports.range,
             map: env.ports.map.clone(),
         },
-        published: published(&env.ports),
+        published,
         checkpoints: env.checkpoints.keys().cloned().collect(),
     }
 }
 
-/// Published ports sorted by host port.
-fn published(ports: &Ports) -> Vec<Published> {
-    let mut published: Vec<Published> = ports
+/// Published ports of `env` sorted by host port, with the variables
+/// `settings` names them by.
+fn published(env: &Env, settings: &Settings) -> Vec<Published> {
+    let variables = settings.port_variables();
+    let mut published: Vec<Published> = env
+        .ports
         .map
         .iter()
         .filter_map(|(key, &host_port)| {
@@ -206,6 +221,11 @@ fn published(ports: &Ports) -> Vec<Published> {
                 service: service.to_owned(),
                 container_port: container_port.parse().ok()?,
                 host_port,
+                variables: variables
+                    .iter()
+                    .filter(|(_, named)| named == key && env.named_port(key).is_some())
+                    .map(|(variable, _)| variable.clone())
+                    .collect(),
             })
         })
         .collect();

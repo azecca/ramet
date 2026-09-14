@@ -122,11 +122,66 @@ only once you confirm (`--yes` in a script). Nothing is ever deleted, and no
 file git tracks is ever written. Containers read these files when they are
 created: `ramet compose up -d` applies the changes.
 
+## Addresses of an env
+
+Each env publishes its ports on host ports of its own. Most addresses follow
+by themselves: containers reach each other by service name, and
+`localhost:<port>` is rewritten in the copied files. An address on another
+host does not: the one a browser opens through a reverse proxy, an OAuth
+redirect URI, a CORS origin. It must carry the env's port, and ramet does not
+guess where it is written. Name the port in `.ramet.json`:
+
+```json
+{ "ports": { "web": "proxy:80" } }
+```
+
+then write its variable where the address is, in a compose file or in the
+`.env` compose reads:
+
+```yaml
+services:
+  app:
+    environment:
+      APP_URL: http://app.test${RAMET_PORT_WEB:+:$RAMET_PORT_WEB}
+```
+
+| env | `RAMET_PORT_WEB` | `APP_URL` |
+|---|---|---|
+| `main`, which keeps the project's ports | unset | `http://app.test` |
+| `feat-price`, on ports of its own | `21000` | `http://app.test:21000` |
+| a plain `docker compose up`, without ramet | unset | `http://app.test` |
+
+- `web` is a name of your choice, which gives `RAMET_PORT_WEB`; `proxy:80` is
+  the service and the port inside its container, as `ramet ls` shows them.
+- The variable is set only in an env with ports of its own. Anywhere else it
+  is unset, whatever the shell holds, so the project runs the same for someone
+  who does not use ramet. `${RAMET_PORT_WEB:-80}` gives the port number in
+  every case.
+- Compose interpolates the variable, the application never sees it. A file the
+  application reads by itself, such as a `.env` loaded by Vite or dotenv, gets
+  the address through the service's `environment`, which both let win over
+  their files.
+- `ramet ls` shows the variable next to its port, and `ramet doctor` reports a
+  name whose port is not published.
+
+ramet also resolves the compose files under the env's project name, so
+`${COMPOSE_PROJECT_NAME}` is the stack's (`shop-feat-price`). A reverse proxy
+that finds containers through the docker socket, such as Traefik, sees those of
+every env, and sends part of the requests to containers it cannot reach. Keep
+it to its own env:
+
+```yaml
+services:
+  proxy:
+    command:
+      - "--providers.docker.constraints=Label(`com.docker.compose.project`,`${COMPOSE_PROJECT_NAME}`)"
+```
+
 ## `.ramet.json`
 
 Most projects need no configuration. For the others, a `.ramet.json` at the
-root of the repository says how compose runs the project and which local files
-to sync. Every key is optional:
+root of the repository says how compose runs the project, which ports to name
+and which local files to sync. Every key is optional:
 
 ```json
 {
@@ -134,6 +189,7 @@ to sync. Every key is optional:
     "files": ["docker/compose/base.yml", "docker/compose/dev.yml"],
     "profiles": ["dev"]
   },
+  "ports": {"web": "proxy:80"},
   "sync": ["**/.env", "config/local.toml", "certs"]
 }
 ```
@@ -145,6 +201,9 @@ to sync. Every key is optional:
   the first file's directory.
 - `compose.profiles`: the profiles every command enables.
   `ramet compose --profile tools run migrate` adds one for a single command.
+- `ports`: names given to published ports, each `service:container_port`;
+  the port named `web` is `${RAMET_PORT_WEB}` in the compose files. See
+  [Addresses of an env](#addresses-of-an-env).
 - `sync`: the local files to sync, as paths or glob patterns (`*` within a
   directory, `**` across directories); a directory stands for everything in
   it. It replaces the default (`["**/.env", "**/.env.*"]`): list the `.env`

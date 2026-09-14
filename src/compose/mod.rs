@@ -9,6 +9,7 @@ pub mod config;
 pub mod discovery;
 pub mod stack;
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 pub use config::{ComposeConfig, DeclaredVolumes};
@@ -20,6 +21,16 @@ use crate::process::{Cmd, Runner, RunnerExt};
 
 /// Number of error lines of `docker compose config` quoted when it fails.
 const CONFIG_ERROR_LINES: usize = 4;
+
+/// What an env adds to the variables its compose files interpolate.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Interpolation {
+    /// The compose project, given with `-p`: `${COMPOSE_PROJECT_NAME}` then
+    /// names the project the stack runs as, not the worktree's directory.
+    pub project: Option<String>,
+    /// Variables to set, or, for `None`, to keep from ramet's environment.
+    pub variables: BTreeMap<String, Option<String>>,
+}
 
 /// Docker compose operations that are not tied to one env.
 pub struct Compose<'a> {
@@ -41,19 +52,24 @@ impl<'a> Compose<'a> {
     /// No `-f` is ever passed. `profiles` are replayed with `--profile`, and
     /// declared `files` are handed over through `COMPOSE_FILE`, compose's own
     /// mechanism, with the project directory `-f` would give: see
-    /// [`discovery::project_directory`].
+    /// [`discovery::project_directory`]. `interpolation` adds what an env
+    /// gives the variables of the files.
     pub fn resolve(
         &self,
         worktree: &Path,
         profiles: &[String],
         files: &[String],
+        interpolation: &Interpolation,
     ) -> Result<ComposeConfig> {
         let files = discovery::normalize_compose_files(worktree, files)?;
         if files.is_empty() {
             discovery::ensure_discoverable(worktree, self.host.var("COMPOSE_FILE").as_deref())?;
         }
-        let mut cmd = Cmd::new("docker")
-            .arg("compose")
+        let mut cmd = Cmd::new("docker").arg("compose");
+        if let Some(project) = &interpolation.project {
+            cmd = cmd.args(["-p", project]);
+        }
+        cmd = cmd
             .arg("--project-directory")
             .arg(discovery::project_directory(worktree, &files));
         for profile in profiles {
@@ -62,6 +78,12 @@ impl<'a> Compose<'a> {
         cmd = cmd
             .args(["config", "--format", "json"])
             .current_dir(worktree);
+        for (variable, value) in &interpolation.variables {
+            cmd = match value {
+                Some(value) => cmd.env(variable, value),
+                None => cmd.env_remove(variable),
+            };
+        }
         if !files.is_empty() {
             cmd = cmd
                 .env(

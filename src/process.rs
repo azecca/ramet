@@ -5,7 +5,7 @@
 //! and lets tests substitute a scripted runner for the real system.
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::fmt::{self, Write as _};
 use std::io::{self, Write};
@@ -45,6 +45,7 @@ pub struct Cmd {
     args: Vec<OsString>,
     current_dir: Option<PathBuf>,
     envs: BTreeMap<OsString, OsString>,
+    removed_envs: BTreeSet<OsString>,
     input: Option<String>,
     mode: OutputMode,
 }
@@ -58,6 +59,7 @@ impl Cmd {
             args: Vec::new(),
             current_dir: None,
             envs: BTreeMap::new(),
+            removed_envs: BTreeSet::new(),
             input: None,
             mode: OutputMode::default(),
         }
@@ -92,8 +94,18 @@ impl Cmd {
     /// Sets an environment variable on top of the inherited environment.
     #[must_use]
     pub fn env(mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> Self {
+        self.removed_envs.remove(key.as_ref());
         self.envs
             .insert(key.as_ref().to_owned(), value.as_ref().to_owned());
+        self
+    }
+
+    /// Keeps an environment variable of ramet's own environment from the
+    /// command.
+    #[must_use]
+    pub fn env_remove(mut self, key: impl AsRef<OsStr>) -> Self {
+        self.envs.remove(key.as_ref());
+        self.removed_envs.insert(key.as_ref().to_owned());
         self
     }
 
@@ -130,6 +142,11 @@ impl Cmd {
     /// The environment variables set on top of the inherited environment.
     pub fn env_vars(&self) -> &BTreeMap<OsString, OsString> {
         &self.envs
+    }
+
+    /// The environment variables kept from the command.
+    pub fn removed_env_vars(&self) -> &BTreeSet<OsString> {
+        &self.removed_envs
     }
 
     /// What the command receives on its standard input, if anything.
@@ -288,6 +305,12 @@ impl SystemRunner {
 
     fn log(self, cmd: &Cmd) {
         let mut env_prefix = String::new();
+        if !cmd.removed_env_vars().is_empty() {
+            env_prefix.push_str("env ");
+            for key in cmd.removed_env_vars() {
+                let _ = write!(env_prefix, "-u {} ", key.to_string_lossy());
+            }
+        }
         for (key, value) in cmd.env_vars() {
             let _ = write!(
                 env_prefix,
@@ -313,6 +336,9 @@ impl Runner for SystemRunner {
         }
         let mut command = Command::new(program_to_start(cmd.program(), locate_program));
         command.args(cmd.arguments()).envs(cmd.env_vars());
+        for key in cmd.removed_env_vars() {
+            command.env_remove(key);
+        }
         if let Some(dir) = cmd.working_dir() {
             command.current_dir(dir);
         }
@@ -496,5 +522,21 @@ mod tests {
             )
             .unwrap();
         assert_eq!(output.stdout, format!("value {}", dir.path().display()));
+    }
+
+    #[test]
+    fn a_removed_variable_is_not_inherited() {
+        // `HOME` is set in any test run: only the removal can take it away.
+        let cmd = Cmd::new("sh")
+            .args(["-c", "printf '%s' \"${HOME-unset}\""])
+            .env("HOME", "/tmp")
+            .env_remove("HOME");
+        assert_eq!(cmd.env_var("HOME"), None);
+        let output = SystemRunner::default().run_checked(&cmd).unwrap();
+        assert_eq!(output.stdout, "unset");
+
+        let set_again = Cmd::new("true").env_remove("HOME").env("HOME", "/tmp");
+        assert!(set_again.removed_env_vars().is_empty());
+        assert_eq!(set_again.env_var("HOME").as_deref(), Some("/tmp"));
     }
 }

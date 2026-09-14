@@ -189,6 +189,25 @@ fn an_uncommitted_ramet_json_comes_along() {
 }
 
 #[test]
+fn the_new_stack_is_generated_with_its_named_ports() {
+    let fx = Fixture::with_main_env();
+    write_settings(&fx.clone, &json!({"ports": {"web": "web:80"}}));
+    fx.runner.set_config(json!({
+        "services": {"web": {"image": "nginx", "ports": [crate::support::port(80, 8080)]}},
+    }));
+    create(&fx, "feat-a", |_| {}).unwrap();
+    let worktree = fx.base.join("app.wt/feat-a");
+    let last = fx
+        .runner
+        .config_calls()
+        .into_iter()
+        .rfind(|cmd| cmd.working_dir() == Some(worktree.as_path()))
+        .expect("the new worktree is resolved");
+    let port = fx.load("feat-a").ports.map["web:80"];
+    assert_eq!(last.env_var("RAMET_PORT_WEB"), Some(port.to_string()));
+}
+
+#[test]
 fn a_committed_ramet_json_is_taken_from_the_branch() {
     // The branch checked out decides; the source's copy is not synced over it.
     let fx = Fixture::with_main_env();

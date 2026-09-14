@@ -4,6 +4,7 @@ use std::assert_matches;
 use std::fs;
 use std::time::{Duration, SystemTime};
 
+use ramet::compose::Interpolation;
 use ramet::env::Env;
 use ramet::error::Error;
 use serde_json::json;
@@ -154,7 +155,11 @@ fn compose_is_not_started_when_it_would_find_no_file() {
     let fx = Fixture::new();
     let bare = fx.base.join("bare");
     fs::create_dir(&bare).unwrap();
-    let err = fx.ctx().compose().resolve(&bare, &[], &[]).unwrap_err();
+    let err = fx
+        .ctx()
+        .compose()
+        .resolve(&bare, &[], &[], &Interpolation::default())
+        .unwrap_err();
     assert_matches!(err, Error::ComposeNotDiscoverable { .. });
     assert!(
         fx.runner.config_calls().is_empty(),
@@ -170,7 +175,7 @@ fn declared_files_make_the_guard_moot() {
     write_file(&bare, "a.yml", "services: {}\n");
     fx.ctx()
         .compose()
-        .resolve(&bare, &[], &["a.yml".to_owned()])
+        .resolve(&bare, &[], &["a.yml".to_owned()], &Interpolation::default())
         .unwrap();
 }
 
@@ -184,14 +189,21 @@ fn compose_file_from_the_shell_satisfies_the_guard() {
         .vars
         .borrow_mut()
         .insert("COMPOSE_FILE".into(), "x.yml".into());
-    fx.ctx().compose().resolve(&bare, &[], &[]).unwrap();
+    fx.ctx()
+        .compose()
+        .resolve(&bare, &[], &[], &Interpolation::default())
+        .unwrap();
 }
 
 #[test]
 fn a_failing_config_reports_its_last_lines() {
     let fx = Fixture::new();
     fx.runner.fail("config");
-    let err = fx.ctx().compose().resolve(&fx.clone, &[], &[]).unwrap_err();
+    let err = fx
+        .ctx()
+        .compose()
+        .resolve(&fx.clone, &[], &[], &Interpolation::default())
+        .unwrap_err();
     assert_matches!(err, Error::ComposeConfigFailed { .. });
     assert!(err.to_string().contains("simulated failure"));
 }
@@ -298,6 +310,101 @@ fn a_new_published_port_is_recorded() {
         8080,
         "main keeps the project's port"
     );
+}
+
+// ------------------------------------------------------------- named ports
+// The developer writes `${RAMET_PORT_WEB}` where an address needs the env's
+// port: compose interpolates it, ramet never touches the project's files.
+
+/// `feat-a`, in the main clone's worktree declaring `ports`, with its own
+/// block where `web:80` is on 30000.
+fn env_with_named_ports(fx: &Fixture, ports: &serde_json::Value) -> Env {
+    write_settings(&fx.clone, &json!({ "ports": ports }));
+    fx.runner.set_config(example_config());
+    fx.save_env(fx.env("feat-a", |env| {
+        env.worktree.clone_from(&fx.clone);
+        env.parent = Some("main".into());
+        env.ports.range = Some([30_000, 30_006].into());
+        env.ports.map.insert("web:80".into(), 30_000);
+    }))
+}
+
+#[test]
+fn compose_reads_the_configuration_as_the_env_project() {
+    // `${COMPOSE_PROJECT_NAME}` must name the project the stack runs as,
+    // not the worktree's directory.
+    let fx = Fixture::new();
+    let mut env = env_with_named_ports(&fx, &json!({}));
+    regenerate(&fx, &mut env, &[]);
+    let projects: Vec<Option<String>> = fx
+        .runner
+        .compose_calls()
+        .into_iter()
+        .filter(|call| call.verb == "config")
+        .map(|call| call.project)
+        .collect();
+    assert_eq!(projects, [Some(format!("{PROJECT}-feat-a"))]);
+}
+
+#[test]
+fn a_named_port_reaches_compose_with_the_env_port() {
+    let fx = Fixture::new();
+    let mut env = env_with_named_ports(&fx, &json!({"web": "web:80"}));
+    regenerate(&fx, &mut env, &[]);
+    let calls = fx.runner.config_calls();
+    assert_eq!(calls.len(), 1, "the ports did not change: one reading");
+    assert_eq!(calls[0].env_var("RAMET_PORT_WEB").as_deref(), Some("30000"));
+}
+
+#[test]
+fn a_named_port_is_unset_in_an_env_keeping_the_project_ports() {
+    // As for a developer without ramet: `${RAMET_PORT_WEB:-8080}` gives the
+    // project's port, and a value left in the shell cannot leak in.
+    let fx = Fixture::new();
+    write_settings(&fx.clone, &json!({"ports": {"web": "web:80"}}));
+    fx.runner.set_config(example_config());
+    let mut env = fx.save_env(fx.env("main", |env| {
+        env.worktree.clone_from(&fx.clone);
+        env.ports.map.insert("web:80".into(), 8080);
+    }));
+    regenerate(&fx, &mut env, &[]);
+    let cmd = &fx.runner.config_calls()[0];
+    assert_eq!(cmd.env_var("RAMET_PORT_WEB"), None);
+    assert!(
+        cmd.removed_env_vars()
+            .iter()
+            .any(|key| key == "RAMET_PORT_WEB"),
+        "{:?}",
+        cmd.removed_env_vars()
+    );
+}
+
+#[test]
+fn a_port_given_while_regenerating_is_read_again_with_its_value() {
+    let fx = Fixture::new();
+    let mut env = env_with_named_ports(&fx, &json!({"web": "web:80"}));
+    env.ports.map.clear();
+    regenerate(&fx, &mut env, &[]);
+    let given = fx.load("feat-a").ports.map["web:80"];
+    let calls = fx.runner.config_calls();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].env_var("RAMET_PORT_WEB"), None);
+    assert_eq!(calls[1].env_var("RAMET_PORT_WEB"), Some(given.to_string()));
+}
+
+#[test]
+fn a_named_port_that_is_not_published_is_reported() {
+    let fx = Fixture::new();
+    let mut env = env_with_named_ports(&fx, &json!({"web": "proxy:80"}));
+    regenerate(&fx, &mut env, &[]);
+    let stderr = fx.stderr();
+    assert!(
+        stderr.contains("ports.web")
+            && stderr.contains("proxy:80")
+            && stderr.contains("RAMET_PORT_WEB"),
+        "{stderr}"
+    );
+    assert!(fx.stdout().is_empty(), "compose output stays clean");
 }
 
 // ------------------------------------------------------------------ volumes

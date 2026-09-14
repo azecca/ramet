@@ -16,12 +16,12 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::compose::{ComposeConfig, Stack};
+use crate::compose::{ComposeConfig, Interpolation, Stack};
 use crate::context::Context;
 use crate::error::Result;
 use crate::layout::Layout;
 use crate::ports::{self, PortMap, PortRange};
-use crate::settings::Settings;
+use crate::settings::{Settings, port_variable};
 use crate::util::fs::{create_dir_all, write_atomic, write_json};
 
 /// The content of an `env.json` file.
@@ -129,14 +129,55 @@ impl Env {
     ///
     /// Read from the worktree every time, like the compose files themselves:
     /// a branch that reorganizes its compose files brings its own
-    /// `.ramet.json` along.
+    /// `.ramet.json` along. The files interpolate the env's compose project
+    /// and named ports: see [`Env::interpolation`].
     pub fn resolve(&self, ctx: &Context, extra_profiles: &[String]) -> Result<ComposeConfig> {
         let settings = self.settings()?;
+        self.resolve_with(ctx, &settings, extra_profiles)
+    }
+
+    fn resolve_with(
+        &self,
+        ctx: &Context,
+        settings: &Settings,
+        extra_profiles: &[String],
+    ) -> Result<ComposeConfig> {
         ctx.compose().resolve(
             &self.worktree,
             &settings.profiles_with(extra_profiles),
             &settings.compose.files,
+            &self.interpolation(settings),
         )
+    }
+
+    /// What the env's compose files interpolate on top of the developer's
+    /// variables: `${COMPOSE_PROJECT_NAME}`, the env's compose project, and
+    /// the variable of each port named in `settings`.
+    ///
+    /// A named port has a value only in an env with its own block of ports.
+    /// Elsewhere, as for a developer without ramet, it is unset, whatever the
+    /// shell says: `${RAMET_PORT_WEB:-80}` then gives the project's port, and
+    /// `http://app.test${RAMET_PORT_WEB:+:$RAMET_PORT_WEB}` an address
+    /// without one.
+    pub fn interpolation(&self, settings: &Settings) -> Interpolation {
+        Interpolation {
+            project: Some(self.compose_project()),
+            variables: settings
+                .port_variables()
+                .into_iter()
+                .map(|(variable, key)| {
+                    (variable, self.named_port(&key).map(|port| port.to_string()))
+                })
+                .collect(),
+        }
+    }
+
+    /// The value of a port named after the published port `key`: its host
+    /// port in an env with its own block, `None` elsewhere.
+    pub fn named_port(&self, key: &str) -> Option<u16> {
+        self.ports
+            .range
+            .and_then(|_| self.ports.map.get(key).copied())
     }
 
     /// Regenerates the env's compose configuration; called before every
@@ -149,14 +190,23 @@ impl Env {
     /// without the profiled services, and without their named volumes, which
     /// `docker compose config` drops too.
     pub fn regenerate(&mut self, ctx: &Context, extra_profiles: &[String]) -> Result<PathBuf> {
-        let config = self.resolve(ctx, extra_profiles)?;
+        let settings = self.settings()?;
+        let mut config = self.resolve_with(ctx, &settings, extra_profiles)?;
         let keys = config.published_ports();
         if keys.iter().any(|key| !self.ports.map.contains_key(key)) {
-            // Until env.json records the ports: no other env may pick them.
-            let _ports = crate::lock::ports(ctx)?;
-            self.extend_ports(ctx, &keys, &config)?;
-            self.save(ctx.layout())?;
+            let before = self.interpolation(&settings);
+            {
+                // Until env.json records the ports: no other env may pick them.
+                let _ports = crate::lock::ports(ctx)?;
+                self.extend_ports(ctx, &keys, &config)?;
+                self.save(ctx.layout())?;
+            }
+            // The files were read without the value of a port just given.
+            if self.interpolation(&settings) != before {
+                config = self.resolve_with(ctx, &settings, extra_profiles)?;
+            }
         }
+        warn_unpublished_named_ports(ctx, &settings, &keys);
 
         let layout = ctx.layout();
         let volumes_dir = layout.volumes_dir(&self.project, &self.name);
@@ -213,6 +263,31 @@ impl Env {
             self.ports.map.insert(key.clone(), port);
         }
         Ok(())
+    }
+}
+
+/// What is wrong with each named port of `settings` that is not among the
+/// published `keys`: its variable stays unset. A service of a profile left
+/// off is one; a typo is another.
+pub fn unpublished_named_ports(settings: &Settings, keys: &[String]) -> Vec<String> {
+    settings
+        .named_ports()
+        .filter(|(_, key)| !keys.contains(key))
+        .map(|(name, key)| {
+            format!(
+                "ports.{name}: {key} is not published, {} is not set",
+                port_variable(name)
+            )
+        })
+        .collect()
+}
+
+/// Warns about [`unpublished_named_ports`] on standard error, which keeps
+/// the output of a compose command clean.
+fn warn_unpublished_named_ports(ctx: &Context, settings: &Settings, keys: &[String]) {
+    let ui = ctx.ui();
+    for problem in unpublished_named_ports(settings, keys) {
+        ui.err(format!("{} {problem}", ui.style().yellow("!")));
     }
 }
 

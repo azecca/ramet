@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 
 use crate::commands::Outcome;
 use crate::commands::support::{Rollback, given};
-use crate::compose::ComposeConfig;
 use crate::compose::discovery::{nested_compose_file, normalize_compose_files, project_directory};
+use crate::compose::{ComposeConfig, Interpolation};
 use crate::context::Context;
 use crate::env::{Env, Ports, store};
 use crate::error::{Error, Result};
@@ -160,9 +160,16 @@ fn inspect(ctx: &Context) -> Result<(PathBuf, ComposeConfig, String)> {
 
     let settings = Settings::load(&worktree)?;
     let compose_files = normalize_compose_files(&worktree, &settings.compose.files)?;
+    // As the developer runs it: the volumes to migrate bear the project's
+    // own name.
     let config = ctx
         .compose()
-        .resolve(&worktree, &settings.compose.profiles, &compose_files)
+        .resolve(
+            &worktree,
+            &settings.compose.profiles,
+            &compose_files,
+            &Interpolation::default(),
+        )
         .map_err(|err| match err {
             // Run from a subdirectory holding a compose file, `init` says
             // which file it could have used, and why it does not.

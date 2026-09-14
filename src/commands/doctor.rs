@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use crate::commands::{Outcome, prerequisites, restore};
 use crate::context::Context;
-use crate::env::{Env, store};
+use crate::env::{Env, store, unpublished_named_ports};
 use crate::error::Result;
 use crate::layout::{
     CHECKPOINT_SEPARATOR, LOW_SPACE_THRESHOLD, Layout, checkpoint_name, env_file_name,
@@ -480,6 +480,12 @@ fn check_env(ctx: &Context, report: &mut Report<'_>, env: &Env, live: &BTreeSet<
             return;
         }
     };
+    // `resolve` read `.ramet.json` a moment ago.
+    let settings = env.settings().unwrap_or_default();
+    for problem in unpublished_named_ports(&settings, &config.published_ports()) {
+        report.warn(problem);
+    }
+
     let fixed = config.fixed_container_names();
     if !fixed.is_empty() {
         let services: Vec<&str> = fixed.keys().map(String::as_str).collect();

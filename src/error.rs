@@ -623,8 +623,7 @@ fn compose_files_example(files: &[&str]) -> String {
 }
 
 /// What a `.ramet.json` looks like, for the hint of an invalid one.
-const SETTINGS_EXAMPLE: &str =
-    r#"{"compose": {"files": ["compose.yml"], "profiles": ["dev"]}, "sync": ["**/.env"]}"#;
+const SETTINGS_EXAMPLE: &str = r#"{"compose": {"files": ["compose.yml"], "profiles": ["dev"]}, "ports": {"web": "proxy:80"}, "sync": ["**/.env"]}"#;
 
 /// What to do when the commit a new worktree checks out lacks compose files.
 fn uncommitted_hint(files: &[String], branch: Option<&str>) -> String {

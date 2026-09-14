@@ -79,6 +79,53 @@ fn ls_json_describes_each_env() {
 }
 
 #[test]
+fn ls_names_the_variable_of_a_named_port_where_it_is_set() {
+    let fx = Fixture::with_main_env();
+    let ports = serde_json::json!({"ports": {"web": "web:80"}});
+    crate::support::write_settings(&fx.clone, &ports);
+    fx.save_env(fx.env("main", |env| {
+        env.worktree.clone_from(&fx.clone);
+        env.ports.map.insert("web:80".into(), 8080);
+    }));
+    let worktree = fx.add_worktree("feat-a");
+    crate::support::write_settings(&worktree, &ports);
+    fx.save_env(fx.env("feat-a", |env| {
+        env.parent = Some("main".into());
+        env.worktree = worktree;
+        env.ports.range = Some([30_000, 30_006].into());
+        env.ports.map.insert("web:80".into(), 30_000);
+    }));
+
+    ls::run(&fx.ctx(), &ls::Args { json: false }).unwrap();
+    let out = fx.stdout();
+    assert!(
+        out.contains("localhost:30000 → web:80  RAMET_PORT_WEB"),
+        "{out}"
+    );
+    assert!(
+        out.contains("localhost:8080 → web:80\n"),
+        "unset where the env keeps the project's ports: {out}"
+    );
+
+    let fx_json = Fixture::with_main_env();
+    let worktree = fx_json.add_worktree("feat-a");
+    crate::support::write_settings(&worktree, &ports);
+    fx_json.save_env(fx_json.env("feat-a", |env| {
+        env.parent = Some("main".into());
+        env.worktree = worktree;
+        env.ports.range = Some([30_000, 30_006].into());
+        env.ports.map.insert("web:80".into(), 30_000);
+    }));
+    ls::run(&fx_json.ctx(), &ls::Args { json: true }).unwrap();
+    assert_eq!(
+        json_output(&fx_json)["envs"][0]["published"],
+        serde_json::json!([
+            {"service": "web", "container_port": 80, "host_port": 30_000, "variables": ["RAMET_PORT_WEB"]},
+        ])
+    );
+}
+
+#[test]
 fn ls_reports_a_missing_worktree() {
     let fx = Fixture::with_main_env();
     fx.save_env(fx.env("gone", |env| env.worktree = fx.base.join("vanished")));

@@ -6,8 +6,9 @@ use std::fs;
 use clap::Parser;
 use ramet::app;
 use ramet::cli::Cli;
+use serde_json::json;
 
-use crate::support::Fixture;
+use crate::support::{Fixture, write_settings};
 
 /// Runs `ramet doctor` and returns its exit code.
 fn doctor(fx: &Fixture) -> u8 {
@@ -106,6 +107,23 @@ fn a_restore_cut_short_mid_swap_is_reported_with_the_command_that_repairs_it() {
     assert!(out.contains("the next restore deletes it"), "{out}");
     assert!(
         !out.contains("missing from env.json: main@.restoring"),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_named_port_that_is_not_published_is_reported() {
+    let fx = Fixture::with_main_env();
+    let machine = fx.machine();
+    machine.borrow_mut().fstab = Some(fx.image_fstab_line());
+    machine.borrow_mut().mounted = true;
+    fs::write(fx.layout().data_image(), "").unwrap();
+    write_settings(&fx.clone, &json!({"ports": {"web": "proxy:80"}}));
+
+    doctor(&fx);
+    let out = fx.stdout();
+    assert!(
+        out.contains("ports.web: proxy:80 is not published, RAMET_PORT_WEB is not set"),
         "{out}"
     );
 }
