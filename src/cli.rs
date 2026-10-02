@@ -316,6 +316,32 @@ mod tests {
     }
 
     #[test]
+    fn delete_goes_before_or_after_the_label() {
+        for line in [
+            ["checkpoint", "--delete", "c1", "-y"],
+            ["checkpoint", "c1", "--delete", "-y"],
+        ] {
+            assert_matches!(
+                parse(&line).command,
+                Command::Checkpoint(checkpoint::Args { label, delete: true, yes: true, .. })
+                    if label == "c1"
+            );
+        }
+    }
+
+    #[test]
+    fn delete_takes_neither_live_nor_a_message() {
+        for option in [&["--live"][..], &["-m", "before"]] {
+            let line = ["ramet", "checkpoint", "c1", "--delete"]
+                .into_iter()
+                .chain(option.iter().copied());
+            assert!(Cli::try_parse_from(line).is_err(), "{option:?}");
+        }
+        // Only a deletion asks for confirmation.
+        assert!(Cli::try_parse_from(["ramet", "checkpoint", "c1", "-y"]).is_err());
+    }
+
+    #[test]
     fn arguments_after_compose_are_not_ramet_options() {
         let cli = parse(&["-v", "compose", "exec", "-v", "db", "--help"]);
         assert!(cli.verbose);

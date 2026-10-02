@@ -136,6 +136,10 @@ that the restore itself can be undone.
 A checkpoint freezes the stack for about 0.1 s, connections kept. `--live`
 skips the freeze, at the price of a snapshot taken while the database writes.
 
+`ramet checkpoint --delete <label> --yes` deletes one checkpoint of the current
+env and frees what it held alone. The env's data and the envs created from the
+checkpoint (`ramet new --from`) are untouched.
+
 ## Destructive commands: the human decides
 
 Without a terminal, a command that needs a confirmation refuses and changes
@@ -146,6 +150,7 @@ or confirmed, naming what will be lost.
 | command | destroys |
 |---|---|
 | `ramet restore <label> --yes` | the env's data written since the checkpoint |
+| `ramet checkpoint --delete <label> --yes` | that checkpoint: the env can no longer be restored to it |
 | `ramet rm <env> --yes` | the env's worktree **with its uncommitted changes**, its data and its checkpoints; the branch stays |
 | `ramet sync --yes` | the local files (`.env`…) that differ from the source env's |
 | `ramet prune --yes` | the orphaned envs and checkpoints of **every project** on the machine |

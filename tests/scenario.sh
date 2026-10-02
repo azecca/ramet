@@ -327,6 +327,14 @@ wait_pg "$A" ramet
 lacks_note "$A" ramet r4-apres-c1 "r4-apres-c1 effacée par le restore"
 has_note   "$A" ramet r2-feat-a   "r2-feat-a (antérieure à c1) conservée"
 assert_eq "coucou-classique" "$(get_upload "$A")" "uploads cohérent avec pgdata après restore"
+# Un checkpoint supprimé seul : c1 et les données de l'env restent.
+rmt "$A" checkpoint c2
+assert_subvol "$DATA/feat-a@c2"
+rmt "$A" checkpoint --delete c2 --yes
+assert_nosubvol "$DATA/feat-a@c2"
+assert_subvol "$DATA/feat-a@c1"
+rmt "$A" log | grep -q c2 && die "c2 encore listé par ramet log" || ok "c2 absent de ramet log"
+has_note "$A" ramet r2-feat-a "données de feat-a intactes après la suppression de c2"
 
 # ====================================================================== 7 =====
 step 7 "ramet new feat-b --from c1"

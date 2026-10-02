@@ -83,6 +83,7 @@ ramet deinit                 undo init: hand the project back, repository untouc
 ramet new <name>             clone the current env (worktree + snapshot + stack)
 ramet ls [--json]            envs of the project: parent, branch, state, ports
 ramet checkpoint <label>     set a return point on the env's data
+ramet checkpoint --delete <label>  delete a checkpoint of the env
 ramet log [--json]           checkpoints of the current env
 ramet restore <label>        rewind the env's data to a checkpoint
 ramet rm <name>              remove an env, its worktree and its checkpoints
@@ -289,6 +290,10 @@ costs almost nothing; what an env holds alone is what deleting it frees. The
 figures come from btrfs quotas, which `ramet setup` turns on for ramet's
 image. Without them, directories unreadable without root (a database's) are
 left out, and the figures are lower bounds, marked `≥`.
+
+A checkpoint that is no longer needed goes with `ramet checkpoint --delete
+<label>`, which asks first (`--yes` in a script). It frees what the checkpoint
+held alone; the env and the envs created from the checkpoint keep their data.
 
 The image is sparse: it only takes from the host disk what it holds, and the
 space freed inside returns to the disk, in large enough pieces. Blocks freed
