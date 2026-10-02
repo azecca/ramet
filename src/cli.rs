@@ -12,8 +12,8 @@ use std::ffi::OsString;
 use clap::{CommandFactory, Parser, Subcommand};
 
 use crate::commands::{
-    checkpoint, deinit, df, doctor, init, log, ls, new, passthrough, path, prompt, prune, restore,
-    rm, setup, sync,
+    checkpoint, deinit, df, doctor, init, ls, new, passthrough, path, prompt, prune, restore, rm,
+    setup, sync,
 };
 use crate::error::{Error, Result};
 use crate::process::shell_quote;
@@ -64,10 +64,8 @@ pub enum Command {
     New(new::Args),
     /// List the envs of the project
     Ls(ls::Args),
-    /// Take a return point of the current env's data
+    /// Take, list or delete return points of the current env's data
     Checkpoint(checkpoint::Args),
-    /// List the checkpoints of the current env
-    Log(log::Args),
     /// Rewind the current env's data to a checkpoint
     Restore(restore::Args),
     /// Remove an env, its worktree and its checkpoints
@@ -101,7 +99,6 @@ impl Command {
             Self::New(_) => "new",
             Self::Ls(_) => "ls",
             Self::Checkpoint(_) => "checkpoint",
-            Self::Log(_) => "log",
             Self::Restore(_) => "restore",
             Self::Rm(_) => "rm",
             Self::Sync(_) => "sync",
@@ -193,7 +190,7 @@ pub fn check_compose_command(args: &[OsString]) -> Result<()> {
         return Err(Error::RametCommandInCompose {
             word,
             command: command_line("ramet", args),
-            // `ramet compose log` more likely means compose's `logs`.
+            // The word may as well be a mistyped compose command.
             compose: verb.map(|verb| format!("ramet compose {verb}")),
         });
     }
@@ -316,29 +313,34 @@ mod tests {
     }
 
     #[test]
-    fn delete_goes_before_or_after_the_label() {
-        for line in [
-            ["checkpoint", "--delete", "c1", "-y"],
-            ["checkpoint", "c1", "--delete", "-y"],
-        ] {
-            assert_matches!(
-                parse(&line).command,
-                Command::Checkpoint(checkpoint::Args { label, delete: true, yes: true, .. })
-                    if label == "c1"
-            );
-        }
+    fn checkpoint_takes_an_action() {
+        assert_matches!(
+            parse(&["checkpoint", "create", "c1", "--live"]).command,
+            Command::Checkpoint(checkpoint::Args {
+                action: checkpoint::Action::Create(checkpoint::Create { label, live: true, .. })
+            }) if label == "c1"
+        );
+        assert_matches!(
+            parse(&["checkpoint", "delete", "c1", "-y"]).command,
+            Command::Checkpoint(checkpoint::Args {
+                action: checkpoint::Action::Delete(checkpoint::Delete { label, yes: true })
+            }) if label == "c1"
+        );
+        assert_matches!(
+            parse(&["checkpoint", "ls", "--json"]).command,
+            Command::Checkpoint(checkpoint::Args {
+                action: checkpoint::Action::Ls(checkpoint::Ls { json: true })
+            })
+        );
     }
 
     #[test]
-    fn delete_takes_neither_live_nor_a_message() {
-        for option in [&["--live"][..], &["-m", "before"]] {
-            let line = ["ramet", "checkpoint", "c1", "--delete"]
-                .into_iter()
-                .chain(option.iter().copied());
-            assert!(Cli::try_parse_from(line).is_err(), "{option:?}");
-        }
+    fn checkpoint_without_an_action_is_refused() {
+        // A bare label would otherwise be read as an action, `ls` as a label.
+        assert!(Cli::try_parse_from(["ramet", "checkpoint"]).is_err());
+        assert!(Cli::try_parse_from(["ramet", "checkpoint", "c1"]).is_err());
         // Only a deletion asks for confirmation.
-        assert!(Cli::try_parse_from(["ramet", "checkpoint", "c1", "-y"]).is_err());
+        assert!(Cli::try_parse_from(["ramet", "checkpoint", "create", "c1", "-y"]).is_err());
     }
 
     #[test]
@@ -423,10 +425,23 @@ mod tests {
             Err(Error::RametCommandInCompose { word, command, .. })
                 if word == "restore" && command == "ramet restore c1"
         );
+    }
+
+    #[test]
+    fn log_is_only_a_mistyped_compose_logs() {
+        assert!(
+            Cli::try_parse_from(["ramet", "log", "--json"])
+                .is_ok_and(|cli| matches!(cli.command, Command::Unknown(_)))
+        );
+        assert_matches!(
+            unknown_command(&os(&["log"])),
+            Error::UnknownCommand { suggestion: Some(suggestion), .. }
+                if suggestion == "ramet compose logs"
+        );
         assert_matches!(
             check_compose_command(&os(&["log"])),
-            Err(Error::RametCommandInCompose { compose: Some(compose), .. })
-                if compose == "ramet compose logs"
+            Err(Error::UnknownCommand { suggestion: Some(suggestion), .. })
+                if suggestion == "ramet compose logs"
         );
     }
 
@@ -440,14 +455,13 @@ mod tests {
 
     #[test]
     fn command_names_match_what_the_user_typed() {
-        let samples: [&[&str]; 16] = [
+        let samples: [&[&str]; 15] = [
             &["setup"],
             &["doctor"],
             &["init"],
             &["new", "x"],
             &["ls"],
-            &["checkpoint", "c1"],
-            &["log"],
+            &["checkpoint", "create", "c1"],
             &["restore", "c1"],
             &["rm", "x"],
             &["sync"],
@@ -506,7 +520,10 @@ mod tests {
             panic!()
         };
         assert!(args.yes);
-        let Command::Checkpoint(args) = parse(&["checkpoint", "c1", "-m", "before"]).command else {
+        let Command::Checkpoint(checkpoint::Args {
+            action: checkpoint::Action::Create(args),
+        }) = parse(&["checkpoint", "create", "c1", "-m", "before"]).command
+        else {
             panic!()
         };
         assert_eq!(args.message.as_deref(), Some("before"));

@@ -7,7 +7,7 @@ taken root and lives its own life, apart from the mother plant. ramet does the
 same with a docker compose project. `ramet new feat-x` creates a git worktree,
 a btrfs snapshot of the current environment's volumes, and an isolated compose
 stack. A developer or an AI agent works there without touching anything else;
-`ramet checkpoint` sets a return point, `ramet restore` goes back to it, and
+`ramet checkpoint create` sets a return point, `ramet restore` goes back to it, and
 `ramet rm` throws everything away.
 
 The project itself is never modified: no file is added to the repository, the
@@ -82,9 +82,9 @@ ramet init                   once per project: migrate the existing docker volum
 ramet deinit                 undo init: hand the project back, repository untouched
 ramet new <name>             clone the current env (worktree + snapshot + stack)
 ramet ls [--json]            envs of the project: parent, branch, state, ports
-ramet checkpoint <label>     set a return point on the env's data
-ramet checkpoint --delete <label>  delete a checkpoint of the env
-ramet log [--json]           checkpoints of the current env
+ramet checkpoint create <label>  set a return point on the env's data
+ramet checkpoint ls [--json]     checkpoints of the current env
+ramet checkpoint delete <label>  delete a checkpoint of the env
 ramet restore <label>        rewind the env's data to a checkpoint
 ramet rm <name>              remove an env, its worktree and its checkpoints
 ramet sync [--from <env>]    copy the local files (.env…) of another env again
@@ -291,7 +291,7 @@ figures come from btrfs quotas, which `ramet setup` turns on for ramet's
 image. Without them, directories unreadable without root (a database's) are
 left out, and the figures are lower bounds, marked `≥`.
 
-A checkpoint that is no longer needed goes with `ramet checkpoint --delete
+A checkpoint that is no longer needed goes with `ramet checkpoint delete
 <label>`, which asks first (`--yes` in a script). It frees what the checkpoint
 held alone; the env and the envs created from the checkpoint keep their data.
 
@@ -342,8 +342,8 @@ the data volume: opening a shell has no side effect.
 
 ## AI agents
 
-An agent uses ramet like a developer does, without a terminal: `ls`, `log` and
-`df` take `--json`, and a command that needs a confirmation refuses rather than
+An agent uses ramet like a developer does, without a terminal: `ls`, `checkpoint ls`
+and `df` take `--json`, and a command that needs a confirmation refuses rather than
 guess, until `--yes` says so. `skills/ramet/SKILL.md` tells an agent the rest:
 where it stands, `ramet compose` rather than `docker compose`, an env per task,
 a checkpoint before a migration, and which commands destroy what, so that it

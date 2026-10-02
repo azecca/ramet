@@ -316,10 +316,10 @@ info "feat-a : $(notes "$A" ramet)"
 
 # ====================================================================== 6 =====
 step 6 "checkpoint c1 puis restore : la dernière ligne disparaît"
-rmt "$A" checkpoint c1
+rmt "$A" checkpoint create c1
 assert_subvol "$DATA/feat-a@c1"
-rmt "$A" log | grep -q c1 || die "c1 absent de ramet log"
-ok "c1 listé par ramet log"
+rmt "$A" checkpoint ls | grep -q c1 || die "c1 absent de ramet checkpoint ls"
+ok "c1 listé par ramet checkpoint ls"
 add_note "$A" ramet r4-apres-c1
 has_note "$A" ramet r4-apres-c1
 rmt "$A" restore c1 --yes
@@ -328,12 +328,12 @@ lacks_note "$A" ramet r4-apres-c1 "r4-apres-c1 effacée par le restore"
 has_note   "$A" ramet r2-feat-a   "r2-feat-a (antérieure à c1) conservée"
 assert_eq "coucou-classique" "$(get_upload "$A")" "uploads cohérent avec pgdata après restore"
 # Un checkpoint supprimé seul : c1 et les données de l'env restent.
-rmt "$A" checkpoint c2
+rmt "$A" checkpoint create c2
 assert_subvol "$DATA/feat-a@c2"
-rmt "$A" checkpoint --delete c2 --yes
+rmt "$A" checkpoint delete c2 --yes
 assert_nosubvol "$DATA/feat-a@c2"
 assert_subvol "$DATA/feat-a@c1"
-rmt "$A" log | grep -q c2 && die "c2 encore listé par ramet log" || ok "c2 absent de ramet log"
+rmt "$A" checkpoint ls | grep -q c2 && die "c2 encore listé par ramet checkpoint ls" || ok "c2 absent de ramet checkpoint ls"
 has_note "$A" ramet r2-feat-a "données de feat-a intactes après la suppression de c2"
 
 # ====================================================================== 7 =====

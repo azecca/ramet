@@ -5,7 +5,6 @@ pub mod deinit;
 pub mod df;
 pub mod doctor;
 pub mod init;
-pub mod log;
 pub mod ls;
 pub mod new;
 pub mod passthrough;

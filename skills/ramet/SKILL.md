@@ -8,7 +8,7 @@ description: Work safely in projects managed by ramet, which gives each git bran
 ramet clones a docker compose project per git branch. `ramet new feat-x`
 creates a git worktree, a copy-on-write snapshot of the current env's data
 (its database included) and a stack of its own, on ports of its own.
-`ramet checkpoint` sets a return point on that data, `ramet restore` goes back
+`ramet checkpoint create` sets a return point on that data, `ramet restore` goes back
 to it.
 
 ## Where you are
@@ -123,20 +123,20 @@ Take one before anything that changes data for good: a migration, a bulk
 update, a destructive script.
 
 ```sh
-ramet checkpoint before-migration -m "before 0042_split_users"
-ramet log --json    # label, created_at, head (the commit then), exclusive_bytes
+ramet checkpoint create before-migration -m "before 0042_split_users"
+ramet checkpoint ls --json    # label, created_at, head (the commit then), exclusive_bytes
 ramet restore before-migration --yes --pre-restore
 ```
 
-`restore` rewinds the env's data, not its code: `head` in `ramet log --json`
-says which commit the data went with. It stops the stack, swaps the data and
+`restore` rewinds the env's data, not its code: `head` in the listing says
+which commit the data went with. It stops the stack, swaps the data and
 starts the stack again. `--pre-restore` checkpoints the current data first, so
 that the restore itself can be undone.
 
 A checkpoint freezes the stack for about 0.1 s, connections kept. `--live`
 skips the freeze, at the price of a snapshot taken while the database writes.
 
-`ramet checkpoint --delete <label> --yes` deletes one checkpoint of the current
+`ramet checkpoint delete <label> --yes` deletes one checkpoint of the current
 env and frees what it held alone. The env's data and the envs created from the
 checkpoint (`ramet new --from`) are untouched.
 
@@ -150,7 +150,7 @@ or confirmed, naming what will be lost.
 | command | destroys |
 |---|---|
 | `ramet restore <label> --yes` | the env's data written since the checkpoint |
-| `ramet checkpoint --delete <label> --yes` | that checkpoint: the env can no longer be restored to it |
+| `ramet checkpoint delete <label> --yes` | that checkpoint: the env can no longer be restored to it |
 | `ramet rm <env> --yes` | the env's worktree **with its uncommitted changes**, its data and its checkpoints; the branch stays |
 | `ramet sync --yes` | the local files (`.env`…) that differ from the source env's |
 | `ramet prune --yes` | the orphaned envs and checkpoints of **every project** on the machine |

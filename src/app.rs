@@ -3,7 +3,7 @@
 
 use crate::cli::{Command, unknown_command};
 use crate::commands::{
-    Outcome, checkpoint, deinit, df, doctor, init, log, ls, new, passthrough, path, prompt, prune,
+    Outcome, checkpoint, deinit, df, doctor, init, ls, new, passthrough, path, prompt, prune,
     restore, rm, setup, sync,
 };
 use crate::context::Context;
@@ -52,7 +52,6 @@ pub fn execute(ctx: &Context, command: &Command) -> Result<Outcome> {
         Command::New(args) => new::run(ctx, args),
         Command::Ls(args) => ls::run(ctx, args),
         Command::Checkpoint(args) => checkpoint::run(ctx, args),
-        Command::Log(args) => log::run(ctx, args),
         Command::Restore(args) => restore::run(ctx, args),
         Command::Rm(args) => rm::run(ctx, args),
         Command::Sync(args) => sync::run(ctx, args),

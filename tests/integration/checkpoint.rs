@@ -7,21 +7,24 @@ use std::assert_matches;
 
 use crate::support::{Fixture, PROJECT};
 
-fn take(fx: &Fixture, label: &str, customize: impl FnOnce(&mut checkpoint::Args)) -> Result<()> {
-    let mut args = checkpoint::Args {
+fn take(fx: &Fixture, label: &str, customize: impl FnOnce(&mut checkpoint::Create)) -> Result<()> {
+    let mut create = checkpoint::Create {
         label: label.to_owned(),
-        ..checkpoint::Args::default()
+        ..checkpoint::Create::default()
     };
-    customize(&mut args);
+    customize(&mut create);
+    let args = checkpoint::Args {
+        action: checkpoint::Action::Create(create),
+    };
     checkpoint::run(&fx.ctx(), &args).map(drop)
 }
 
 fn delete(fx: &Fixture, label: &str, yes: bool) -> Result<Outcome> {
     let args = checkpoint::Args {
-        label: label.to_owned(),
-        delete: true,
-        yes,
-        ..checkpoint::Args::default()
+        action: checkpoint::Action::Delete(checkpoint::Delete {
+            label: label.to_owned(),
+            yes,
+        }),
     };
     checkpoint::run(&fx.ctx(), &args)
 }

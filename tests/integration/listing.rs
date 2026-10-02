@@ -1,6 +1,6 @@
-//! Read-only commands: `ls`, `log`, `path` and `prompt`.
+//! Read-only commands: `ls`, `checkpoint ls`, `path` and `prompt`.
 
-use ramet::commands::{Outcome, log, ls, path, prompt};
+use ramet::commands::{Outcome, checkpoint, ls, path, prompt};
 use ramet::env::Checkpoint;
 use ramet::error::Error;
 use ramet::process::Output;
@@ -168,10 +168,17 @@ fn ls_outside_a_project_suggests_init() {
     assert_matches!(err, Error::NoProject { .. });
 }
 
-// --------------------------------------------------------------------- log
+// ----------------------------------------------------------- checkpoint ls
+
+fn list_checkpoints(fx: &Fixture, json: bool) -> Outcome {
+    let args = checkpoint::Args {
+        action: checkpoint::Action::Ls(checkpoint::Ls { json }),
+    };
+    checkpoint::run(&fx.ctx(), &args).unwrap()
+}
 
 #[test]
-fn log_json_describes_each_checkpoint() {
+fn checkpoint_ls_json_describes_each_checkpoint() {
     let fx = Fixture::with_main_env();
     fx.btrfs.0.borrow_mut().usage = Usage {
         exclusive_bytes: Some(4096),
@@ -186,10 +193,7 @@ fn log_json_describes_each_checkpoint() {
         .unwrap(),
     );
     fx.save_env(main);
-    assert_eq!(
-        log::run(&fx.ctx(), &log::Args { json: true }).unwrap(),
-        Outcome::Done
-    );
+    assert_eq!(list_checkpoints(&fx, true), Outcome::Done);
     let history = json_output(&fx);
     assert_eq!(history["env"], "main");
     let entry = &history["checkpoints"][0];
@@ -200,14 +204,14 @@ fn log_json_describes_each_checkpoint() {
 }
 
 #[test]
-fn log_json_without_checkpoints() {
+fn checkpoint_ls_json_without_checkpoints() {
     let fx = Fixture::with_main_env();
-    log::run(&fx.ctx(), &log::Args { json: true }).unwrap();
+    list_checkpoints(&fx, true);
     assert_eq!(json_output(&fx)["checkpoints"], serde_json::json!([]));
 }
 
 #[test]
-fn log_marks_partial_sizes_and_missing_subvolumes() {
+fn checkpoint_ls_marks_partial_sizes_and_missing_subvolumes() {
     let fx = Fixture::with_main_env();
     fx.btrfs.0.borrow_mut().usage = Usage {
         exclusive_bytes: Some(2048),
@@ -220,7 +224,7 @@ fn log_marks_partial_sizes_and_missing_subvolumes() {
     main.checkpoints
         .insert("lost".into(), Checkpoint::default());
     fx.save_env(main);
-    log::run(&fx.ctx(), &log::Args { json: false }).unwrap();
+    list_checkpoints(&fx, false);
     let out = fx.stdout();
     assert!(out.contains("used ≥ 2.0 KiB"), "{out}");
     assert!(out.contains("subvolume missing from disk"), "{out}");

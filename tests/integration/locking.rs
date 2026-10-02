@@ -32,9 +32,11 @@ fn a_command_waits_for_another_on_the_same_project() {
     let (released, holder) = held_elsewhere(&fx.layout().project_dir(PROJECT));
 
     let args = checkpoint::Args {
-        label: "c1".to_owned(),
-        live: true,
-        ..checkpoint::Args::default()
+        action: checkpoint::Action::Create(checkpoint::Create {
+            label: "c1".to_owned(),
+            live: true,
+            ..checkpoint::Create::default()
+        }),
     };
     checkpoint::run(&fx.ctx(), &args).unwrap();
 

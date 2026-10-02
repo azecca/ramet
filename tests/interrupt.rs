@@ -15,7 +15,7 @@ use signal_hook::low_level::raise;
 
 use support::{Fixture, PROJECT};
 
-/// `ramet checkpoint c1` on a running stack, with `signal` raised while the
+/// `ramet checkpoint create c1` on a running stack, with `signal` raised while the
 /// stack is being frozen. Returns the fixture and the exit code.
 fn checkpoint_interrupted_by(signal: i32) -> (Fixture, u8) {
     let fx = Fixture::with_main_env();
@@ -36,7 +36,7 @@ fn checkpoint_interrupted_by(signal: i32) -> (Fixture, u8) {
         }
         None
     });
-    let cli = Cli::try_parse_from(["ramet", "checkpoint", "c1"]).unwrap();
+    let cli = Cli::try_parse_from(["ramet", "checkpoint", "create", "c1"]).unwrap();
     let code = app::run(&fx.ctx(), &cli.command);
     (fx, code)
 }
@@ -80,7 +80,7 @@ fn ctrl_c_during_a_freeze_thaws_the_stack_and_stops_the_command() {
         None
     });
 
-    let cli = Cli::try_parse_from(["ramet", "checkpoint", "c1"]).unwrap();
+    let cli = Cli::try_parse_from(["ramet", "checkpoint", "create", "c1"]).unwrap();
     let code = app::run(&fx.ctx(), &cli.command);
 
     assert_eq!(code, 130);

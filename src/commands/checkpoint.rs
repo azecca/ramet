@@ -1,19 +1,44 @@
-//! `ramet checkpoint`: a named read-only snapshot of the current env's data.
+//! `ramet checkpoint`: named read-only snapshots of the current env's data,
+//! taken with `create`, removed with `delete`, listed with `ls`.
 //!
 //! A checkpoint is a return point, not a commit: the data of two branches are
-//! never merged. `--delete` removes one.
+//! never merged.
+
+use std::path::PathBuf;
+
+use serde::Serialize;
 
 use crate::commands::Outcome;
-use crate::commands::support::Freeze;
+use crate::commands::support::{Freeze, measured};
 use crate::context::Context;
 use crate::env::{Checkpoint, store};
 use crate::error::{Error, Result};
-use crate::util::fs::is_present;
+use crate::storage::Usage;
+use crate::util::fs::{is_present, to_json_pretty};
 use crate::util::time::UtcDateTime;
 
 /// Arguments of `ramet checkpoint`.
-#[derive(Clone, Debug, Default, clap::Args)]
+#[derive(Clone, Debug, clap::Args)]
 pub struct Args {
+    /// What to do with the env's checkpoints
+    #[command(subcommand)]
+    pub action: Action,
+}
+
+/// An action of `ramet checkpoint`.
+#[derive(Clone, Debug, clap::Subcommand)]
+pub enum Action {
+    /// Take a return point of the current env's data
+    Create(Create),
+    /// Delete a checkpoint of the current env
+    Delete(Delete),
+    /// List the checkpoints of the current env
+    Ls(Ls),
+}
+
+/// Arguments of `ramet checkpoint create`.
+#[derive(Clone, Debug, Default, clap::Args)]
+pub struct Create {
     /// Label of the checkpoint
     pub label: String,
 
@@ -24,21 +49,30 @@ pub struct Args {
     /// Message stored with the checkpoint
     #[arg(short, long)]
     pub message: Option<String>,
+}
 
-    /// Delete the checkpoint instead of taking it
-    #[arg(long, conflicts_with_all = ["live", "message"])]
-    pub delete: bool,
+/// Arguments of `ramet checkpoint delete`.
+#[derive(Clone, Debug, Default, clap::Args)]
+pub struct Delete {
+    /// Label of the checkpoint
+    pub label: String,
 
-    /// Do not ask for confirmation before deleting
-    #[arg(short, long, requires = "delete")]
+    /// Do not ask for confirmation
+    #[arg(short, long)]
     pub yes: bool,
 }
 
 /// Runs `ramet checkpoint`.
 pub fn run(ctx: &Context, args: &Args) -> Result<Outcome> {
-    if args.delete {
-        return delete(ctx, args);
+    match &args.action {
+        Action::Create(args) => create(ctx, args),
+        Action::Delete(args) => delete(ctx, args),
+        Action::Ls(args) => list(ctx, args),
     }
+}
+
+/// Takes the checkpoint `args.label` of the current env.
+fn create(ctx: &Context, args: &Create) -> Result<Outcome> {
     let (mut env, _lock) = store::current_env_locked(ctx)?;
     store::validate_name("label", &args.label)?;
     let destination = ctx
@@ -86,7 +120,7 @@ pub fn run(ctx: &Context, args: &Args) -> Result<Outcome> {
 ///
 /// Either half is enough to go on: a record whose subvolume is gone is
 /// forgotten, and a subvolume `env.json` does not record is deleted.
-fn delete(ctx: &Context, args: &Args) -> Result<Outcome> {
+fn delete(ctx: &Context, args: &Delete) -> Result<Outcome> {
     let (mut env, _lock) = store::current_env_locked(ctx)?;
     store::validate_name("label", &args.label)?;
     let layout = ctx.layout();
@@ -142,5 +176,126 @@ fn delete(ctx: &Context, args: &Args) -> Result<Outcome> {
         style.bold(&args.label),
         env.name
     ));
+    Ok(Outcome::Done)
+}
+
+/// Characters of the commit hash shown in the listing.
+const SHORT_HASH: usize = 12;
+
+/// Arguments of `ramet checkpoint ls`.
+#[derive(Clone, Debug, Default, clap::Args)]
+pub struct Ls {
+    /// JSON output, for agents: standard output holds nothing else
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// What `ls` reports about one checkpoint.
+#[derive(Clone, Debug, Serialize)]
+pub struct Entry {
+    /// Its label.
+    pub label: String,
+    /// Creation time.
+    pub created_at: Option<String>,
+    /// Commit checked out when it was taken.
+    pub head: Option<String>,
+    /// Its message.
+    pub message: Option<String>,
+    /// Its subvolume.
+    pub path: PathBuf,
+    /// Whether the subvolume exists.
+    pub exists: bool,
+    /// Bytes it references exclusively (`btrfs filesystem du`).
+    pub exclusive_bytes: Option<u64>,
+    /// Whether that figure is a lower bound.
+    pub exclusive_partial: bool,
+}
+
+#[derive(Serialize)]
+struct History<'a> {
+    env: &'a str,
+    project: &'a str,
+    checkpoints: &'a [Entry],
+}
+
+/// Lists the checkpoints of the current env, oldest first.
+fn list(ctx: &Context, args: &Ls) -> Result<Outcome> {
+    let env = store::current_env(ctx)?;
+    let subvolumes = ctx.subvolumes();
+    let sizes = ctx.sizes();
+    let mut checkpoints: Vec<(&String, &Checkpoint)> = env.checkpoints.iter().collect();
+    checkpoints.sort_by(|a, b| a.1.created_at.cmp(&b.1.created_at));
+    let entries: Vec<Entry> = checkpoints
+        .into_iter()
+        .map(|(label, meta)| {
+            let path = ctx.layout().checkpoint_dir(&env.project, &env.name, label);
+            let exists = subvolumes.is_subvolume(&path);
+            let usage = if exists {
+                sizes.subvolume(&path)
+            } else {
+                Usage::default()
+            };
+            Entry {
+                label: label.clone(),
+                created_at: meta.created_at.clone(),
+                head: meta.head.clone(),
+                message: meta.message.clone(),
+                path,
+                exists,
+                exclusive_bytes: usage.exclusive_bytes,
+                exclusive_partial: usage.partial,
+            }
+        })
+        .collect();
+
+    let ui = ctx.ui();
+    if args.json {
+        ui.out_raw(&to_json_pretty(&History {
+            env: &env.name,
+            project: &env.project,
+            checkpoints: &entries,
+        }));
+        return Ok(Outcome::Done);
+    }
+    if entries.is_empty() {
+        ui.out(format!("no checkpoint for env \"{}\"", env.name));
+        return Ok(Outcome::Done);
+    }
+
+    let style = ui.style();
+    ui.out(format!("checkpoints of {}", style.bold(&env.name)));
+    for entry in &entries {
+        let head: String = entry
+            .head
+            .as_deref()
+            .unwrap_or("?")
+            .chars()
+            .take(SHORT_HASH)
+            .collect();
+        let size = measured(entry.exclusive_bytes, entry.exclusive_partial);
+        ui.blank();
+        ui.out(format!(
+            "  {}   {}",
+            style.bold(&entry.label),
+            entry.created_at.as_deref().unwrap_or("?")
+        ));
+        ui.out(format!("     HEAD {head}   used {size}"));
+        if let Some(message) = entry.message.as_deref().filter(|m| !m.is_empty()) {
+            ui.out(format!("     {message}"));
+        }
+        if !entry.exists {
+            ui.out(format!(
+                "     {} ({})",
+                style.red("subvolume missing from disk"),
+                entry.path.display()
+            ));
+        }
+    }
+    if entries.iter().any(|entry| entry.exclusive_partial) {
+        ui.blank();
+        ui.out(style.dim(
+            "  \"≥\": some directories cannot be read without root, so the size is a lower bound.",
+        ));
+    }
     Ok(Outcome::Done)
 }
